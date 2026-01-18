@@ -10,23 +10,24 @@ using DataFrames
 using Statistics
 using Plots
 
-const ghzs = [ghz(n) for n in 1:10] # make const in order to not build new every time
+
+const steane_generators = [[4,5,6,7], [2,3,6,7], [1,3,5,7]]
 
 # Pre-compute client to generator mapping for O(1) lookup
-const CLIENT_TO_GENERATORS = Dict(
-    1 => [1, 2],
-    2 => [1, 2, 3],
-    3 => [1, 3],
-    4 => [2, 3],
-    5 => [1],
-    6 => [2],
-    7 => [3]
+const client_to_gen_dict = Dict(
+    1 => [3],
+    2 => [2],
+    3 => [2, 3],
+    4 => [1],
+    5 => [1, 3],
+    6 => [1, 2],
+    7 => [1, 2, 3]
 )
 
 # Encapsulate simulation state
 mutable struct SimulationState
-    progress::Vector{Vector{Vector{Int}}}
-    to_be_measured::Vector{Vector{Int}}
+    progress::Vector{Vector{Int}}
+    to_be_measured::Vector{Int}
     logs::Vector{Tuple{Float64, Vector{Int}, Float64, Bool}}
 end
 
@@ -39,11 +40,12 @@ end
 
 @resumable function projectout(sim, net, slot_idx, gen_set_idx, n_clients_in_set, state::SimulationState)
     push!(state.to_be_measured, popfirst!(state.progress[gen_set_idx]))
+    @info "Current SimulationState progress: $(state.progress) and to_be_measured: $(state.to_be_measured)"
     @yield lock(net[1][slot_idx])
-    @debug "Projecting out piecemaker qubit at slot $(slot_idx), $(net[1][slot_idx])"
+    @info "Projecting out piecemaker qubit at slot $(slot_idx), $(net[1][slot_idx])"
     res = project_traceout!(net[1][slot_idx], σˣ)
     @yield timeout(sim, tmeas)
-    @debug "Tagging client $(slot_idx) with Z correction result $(res) for generator set $(gen_set_idx)"
+    @info "Tagging client $(slot_idx) with Z correction result $(res) for generator set $(gen_set_idx)"
     tag!(net[1+slot_idx][1], Tag(:updateZ, res, gen_set_idx, n_clients_in_set))
     unlock(net[1][slot_idx])
 end
@@ -57,38 +59,37 @@ end
     tag!(net[1 + client_slot.idx][1], Tag(:updateX, res))
     unlock(piecemaker_slot)
     unlock(client_slot)
-    @debug "Fused client $(client_slot.idx) with first client $(piecemaker_slot.idx)"
+    @info "Fused client $(client_slot.idx) with first client $(piecemaker_slot.idx)"
 end
 
-function get_oldest_generator_for_candidate(sim, net::RegisterNet, candidate::Int, state::SimulationState, steane_generators)
-    # Use pre-computed mapping instead of searching
-    potential_gens_indcs = CLIENT_TO_GENERATORS[candidate]
+function get_oldest_generator_for_candidate(sim, net::RegisterNet, candidate::Int, state::SimulationState)
+
+    potential_gens_indcs = client_to_gen_dict[candidate]
     
     # Pre-allocate and avoid repeated allocations
     n_clients = length(net.registers) - 1
     accesstimes = Vector{Float64}(undef, n_clients)
     for i in 1:n_clients
-        accesstimes[i] = net.registers[i+1].accesstimes[1]
+        accesstimes[i] = copy(net.registers[i+1].accesstimes[1])
     end
     
     # Replace 0.0 with Inf in-place to avoid allocation
     accesstimes_replaced = replace(accesstimes, 0.0 => Inf)
     sorted_indices = sortperm(accesstimes_replaced)
     
-    @debug "accesstimes: $(accesstimes), sorted: $(sorted_indices)"
+    @info "accesstimes: $(accesstimes), sorted: $(sorted_indices)"
 
     # Check if all potential generators are empty
-    if all(isempty(state.progress[i]) for i in potential_gens_indcs)
-        @debug "Progress is empty, cannot find oldest generator for candidate $(candidate), return index $(potential_gens_indcs[1])"
-        return now(sim), potential_gens_indcs[1]
+    if all(isempty(prog) for prog in state.progress[potential_gens_indcs])
+        @info "Progress is empty, cannot find oldest generator for candidate $(candidate), return random possible index"
+        return now(sim), rand(potential_gens_indcs)
     end
 
     # Optimized search: iterate through sorted clients, check if they're in any valid generator
     for oldest_idx in sorted_indices
-        for gen_idx in potential_gens_indcs
-            prog = state.progress[gen_idx]
-            if !isempty(prog) && oldest_idx ∈ prog[1]
-                @debug "Found generator index $(gen_idx) for candidate $(candidate) with oldest client index $(oldest_idx)"
+        for prog in state.progress[potential_gens_indcs]
+            if oldest_idx ∈ prog
+                @info "Found generator index $(gen_idx) for candidate $(candidate) with oldest client index $(oldest_idx)"
                 timestamp = accesstimes[oldest_idx]
                 return timestamp, gen_idx
             end
@@ -101,13 +102,13 @@ end
 @resumable function GeneratorServiceProt(sim, net, candidate::Int, state::SimulationState, steane_generators, cutoff::Float64)
     notadded = true
 
-    (timestamp, idx_steane_take) = get_oldest_generator_for_candidate(sim, net, candidate, state, steane_generators)
+    (timestamp, idx_steane_take) = get_oldest_generator_for_candidate(sim, net, candidate, state)
     isempty(state.progress[idx_steane_take]) && push!(state.progress[idx_steane_take], Vector{Int}())
 
     while now(sim) - timestamp > cutoff
-        @debug "Generator set $(idx_steane_take) with clients $(state.progress[idx_steane_take][1]) TOO OLD"
+        @info "Generator set $(idx_steane_take) with clients $(state.progress[idx_steane_take][1]) TOO OLD"
         @yield @process projectout(sim, net, state.progress[idx_steane_take][1][1], idx_steane_take, length(state.progress[idx_steane_take][1]), state)
-        (timestamp, idx_steane_take) = get_oldest_generator_for_candidate(sim, net, candidate, state, steane_generators)
+        (timestamp, idx_steane_take) = get_oldest_generator_for_candidate(sim, net, candidate, state)
     end
 
     for s in state.progress[idx_steane_take]
@@ -115,11 +116,11 @@ end
             push!(s, candidate)
             if length(s) > 1
                 @yield @process fusion(sim, net, net[1][s[1]], net[1][candidate])
-                @debug "fusing candidate $(candidate) into generator set index $(idx_steane_take) with current starting index $(s[1])"
+                @info "fusing candidate $(candidate) into generator set index $(idx_steane_take) with current starting index $(s[1])"
             end
             notadded = false
             if length(s) == length(steane_generators[idx_steane_take])
-                @debug "Generator set $(idx_steane_take) completed with clients $(s), projecting out piecemaker qubit"
+                @info "Generator set $(idx_steane_take) completed with clients $(s), projecting out piecemaker qubit"
                 @yield @process projectout(sim, net, s[1], idx_steane_take, length(s), state)
             end
             break
@@ -128,7 +129,7 @@ end
 
     if notadded
         # Use pre-computed mapping
-        potential_gen_idcs = CLIENT_TO_GENERATORS[candidate]
+        potential_gen_idcs = client_to_gen_dict[candidate]
         # Find generator with smallest progress
         min_length = typemax(Int)
         idx = potential_gen_idcs[1]
@@ -152,7 +153,7 @@ end
             if !isnothing(counterpart)
                 slot, _, _ = counterpart
                 @yield @process GeneratorServiceProt(sim, net, slot.idx, state, steane_generators, cutoff)
-                @debug "Sorted client $(slot.idx) into generator sets, current progress: $(state.progress)"
+                @info "Sorted client $(slot.idx) into generator sets, current progress: $(state.progress)"
             else
                 break
             end
@@ -168,14 +169,14 @@ end
         if !isnothing(isdonemessage)
             genset = steane_generators[isdonemessage[3][2]]
             n_clients_in_set = isdonemessage[3][3]
-            @debug "received Zdone tag: $(isdonemessage)"
+            @info "received Zdone tag: $(isdonemessage)"
             
             discarded = true
             fidelity = 0.0
             
             # Measure fidelity
             if length(genset) != n_clients_in_set
-                @debug "MEASURE OUT BEFORE COMPLETION $(state.to_be_measured[1])"
+                @info "MEASURE OUT BEFORE COMPLETION $(state.to_be_measured[1])"
                 clients_to_measure = state.to_be_measured[1]
                 @yield reduce(&, [lock(net[1+i][1]) for i in clients_to_measure])
                 obs_proj = SProjector(StabilizerState(ghzs[length(clients_to_measure)]))
@@ -189,7 +190,7 @@ end
                 @yield reduce(&, [lock(net[1+i][1]) for i in genset])
                 obs_proj = SProjector(StabilizerState(ghzs[n_clients_in_set]))
                 fidelity = real(observable([net[1+i][1] for i in genset], obs_proj))
-                @debug "clients serviced: $(genset) --> fidelity: $(fidelity)"
+                @info "clients serviced: $(genset) --> fidelity: $(fidelity)"
                 # Single cleanup - FIXED: removed double unlock
                 for i in genset
                     traceout!(net[1 + i][1])
@@ -200,7 +201,7 @@ end
             
             timesteps = now(sim)
             push!(state.logs, (timesteps, popfirst!(state.to_be_measured), fidelity, discarded))
-            @debug "Updated progress: $(state.progress)"
+            @info "Updated progress: $(state.progress)"
         end
     end
 end
@@ -214,7 +215,7 @@ end
         if !isnothing(msg1) || !isnothing(msg2)
             if !isnothing(msg1)
                 value = msg1[3][2]
-                @debug "X received at client $(client), with value $(value)"
+                @info "X received at client $(client), with value $(value)"
                 @yield lock(net[1+client][1])
                 if value == 2
                     apply!(net[1+client][1], X, time = now(sim))
@@ -224,11 +225,11 @@ end
             end
             
             if !isnothing(msg2)
-                @debug "Z received at client $(client)"
+                @info "Z received at client $(client)"
                 value = msg2[3][2]
                 gen_set_idx = msg2[3][3]
                 n_clients_in_set = msg2[3][4]
-                @debug "Z received at client $(client), with value $(value), gen_set_idx=$(gen_set_idx), n_clients_in_set=$(n_clients_in_set)"
+                @info "Z received at client $(client), with value $(value), gen_set_idx=$(gen_set_idx), n_clients_in_set=$(n_clients_in_set)"
                 @yield lock(net[1+client][1])
                 if value == 2
                     # noisyZ = NonInstantGate(Z, tXZ)
@@ -320,8 +321,8 @@ for link_success_prob in [1e-4]#[2e-4, 1e-3, 1e-2, 1e-1]
 end
 
 alllogs = vcat(dataframes...)
-@debug "Summary statistics:"
-@debug describe(alllogs)
+@info "Summary statistics:"
+@info describe(alllogs)
 ##
 using StatsPlots
 using LaTeXStrings
