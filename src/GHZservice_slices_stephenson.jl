@@ -12,6 +12,11 @@ using Plots
 
 const ghzs = [ghz(n) for n in 1:10] # make const in order to not build new every time
 
+# Main simulation, measures everything in seconds (s)
+const steane_generators = [[1,2,3,5], [1,2,4,6], [2,3,4,7]]
+const toric_code_generators = [[1,2,4,5], [2,3,5,6], [1,3,4,6]]
+
+
 # Pre-compute client to generator mapping for O(1) lookup
 const CLIENT_TO_GENERATORS = Dict(
     1 => [1, 2],
@@ -25,7 +30,7 @@ const CLIENT_TO_GENERATORS = Dict(
 
 # Encapsulate simulation state
 mutable struct SimulationState
-    progress::Vector{Vector{Vector{Int}}}
+    progress::Vector{Vector{Int}}
     to_be_measured::Vector{Vector{Int}}
     logs::Vector{Tuple{Float64, Vector{Int}, Float64, Bool}}
 end
@@ -38,12 +43,13 @@ function noisy_bell_state(target_fidelity::Float64=0.97)
 end
 
 @resumable function projectout(sim, net, slot_idx, gen_set_idx, n_clients_in_set, state::SimulationState)
-    push!(state.to_be_measured, popfirst!(state.progress[gen_set_idx]))
+    push!(state.to_be_measured, state.progress[gen_set_idx])
+    state.progress[gen_set_idx] = Vector{Int}() # Clear the generator set progress
     @yield lock(net[1][slot_idx])
-    @debug "Projecting out piecemaker qubit at slot $(slot_idx), $(net[1][slot_idx])"
+    @info "Projecting out piecemaker qubit at slot $(slot_idx), $(net[1][slot_idx])"
     res = project_traceout!(net[1][slot_idx], σˣ)
-    @yield timeout(sim, tmeas)
-    @debug "Tagging client $(slot_idx) with Z correction result $(res) for generator set $(gen_set_idx)"
+    @yield timeout(sim, Δt_meas)
+    @info "Tagging client $(slot_idx) with Z correction result $(res) for generator set $(gen_set_idx)"
     tag!(net[1+slot_idx][1], Tag(:updateZ, res, gen_set_idx, n_clients_in_set))
     unlock(net[1][slot_idx])
 end
@@ -51,16 +57,16 @@ end
 @resumable function fusion(sim, net, piecemaker_slot::RegRef, client_slot::RegRef)
     @yield lock(piecemaker_slot) & lock(client_slot)
     apply!((piecemaker_slot, client_slot), CNOT)
-    @yield timeout(sim, tCNOT)
+    @yield timeout(sim, Δt_CNOT)
     res = project_traceout!(client_slot, Z)
-    @yield timeout(sim, tmeas)
+    @yield timeout(sim, Δt_meas)
     tag!(net[1 + client_slot.idx][1], Tag(:updateX, res))
     unlock(piecemaker_slot)
     unlock(client_slot)
-    @debug "Fused client $(client_slot.idx) with first client $(piecemaker_slot.idx)"
+    @info "Fused client $(client_slot.idx) with first client $(piecemaker_slot.idx)"
 end
 
-function get_oldest_generator_for_candidate(sim, net::RegisterNet, candidate::Int, state::SimulationState, steane_generators)
+function get_oldest_generator_for_candidate(sim, net::RegisterNet, candidate::Int, state::SimulationState)
     # Use pre-computed mapping instead of searching
     potential_gens_indcs = CLIENT_TO_GENERATORS[candidate]
     
@@ -75,11 +81,11 @@ function get_oldest_generator_for_candidate(sim, net::RegisterNet, candidate::In
     accesstimes_replaced = replace(accesstimes, 0.0 => Inf)
     sorted_indices = sortperm(accesstimes_replaced)
     
-    @debug "accesstimes: $(accesstimes), sorted: $(sorted_indices)"
+    @info "accesstimes: $(accesstimes), sorted: $(sorted_indices)"
 
     # Check if all potential generators are empty
     if all(isempty(state.progress[i]) for i in potential_gens_indcs)
-        @debug "Progress is empty, cannot find oldest generator for candidate $(candidate), return index $(potential_gens_indcs[1])"
+        @info "Progress $(state.progress) is empty, cannot find oldest generator for candidate $(candidate), return index $(potential_gens_indcs[1])"
         return now(sim), potential_gens_indcs[1]
     end
 
@@ -87,8 +93,8 @@ function get_oldest_generator_for_candidate(sim, net::RegisterNet, candidate::In
     for oldest_idx in sorted_indices
         for gen_idx in potential_gens_indcs
             prog = state.progress[gen_idx]
-            if !isempty(prog) && oldest_idx ∈ prog[1]
-                @debug "Found generator index $(gen_idx) for candidate $(candidate) with oldest client index $(oldest_idx)"
+            if !isempty(prog) && oldest_idx ∈ prog
+                @info "Found generator index $(gen_idx) for candidate $(candidate) with oldest client index $(oldest_idx)"
                 timestamp = accesstimes[oldest_idx]
                 return timestamp, gen_idx
             end
@@ -99,47 +105,26 @@ function get_oldest_generator_for_candidate(sim, net::RegisterNet, candidate::In
 end
 
 @resumable function GeneratorServiceProt(sim, net, candidate::Int, state::SimulationState, steane_generators, cutoff::Float64)
-    notadded = true
 
-    (timestamp, idx_steane_take) = get_oldest_generator_for_candidate(sim, net, candidate, state, steane_generators)
-    isempty(state.progress[idx_steane_take]) && push!(state.progress[idx_steane_take], Vector{Int}())
+    (timestamp, idx_steane_take) = get_oldest_generator_for_candidate(sim, net, candidate, state)
 
     while now(sim) - timestamp > cutoff
-        @debug "Generator set $(idx_steane_take) with clients $(state.progress[idx_steane_take][1]) TOO OLD"
-        @yield @process projectout(sim, net, state.progress[idx_steane_take][1][1], idx_steane_take, length(state.progress[idx_steane_take][1]), state)
-        (timestamp, idx_steane_take) = get_oldest_generator_for_candidate(sim, net, candidate, state, steane_generators)
+        @info "Generator set $(idx_steane_take) with clients $(state.progress[idx_steane_take][1]) TOO OLD"
+        @yield @process projectout(sim, net, state.progress[idx_steane_take][1], idx_steane_take, length(state.progress[idx_steane_take]), state)
+        (timestamp, idx_steane_take) = get_oldest_generator_for_candidate(sim, net, candidate, state)
     end
 
-    for s in state.progress[idx_steane_take]
-        if candidate ∉ s
-            push!(s, candidate)
-            if length(s) > 1
-                @yield @process fusion(sim, net, net[1][s[1]], net[1][candidate])
-                @debug "fusing candidate $(candidate) into generator set index $(idx_steane_take) with current starting index $(s[1])"
-            end
-            notadded = false
-            if length(s) == length(steane_generators[idx_steane_take])
-                @debug "Generator set $(idx_steane_take) completed with clients $(s), projecting out piecemaker qubit"
-                @yield @process projectout(sim, net, s[1], idx_steane_take, length(s), state)
-            end
-            break
+    s = state.progress[idx_steane_take]
+    if candidate ∉ s
+        push!(s, candidate)
+        if length(s) > 1
+            @yield @process fusion(sim, net, net[1][s[1]], net[1][candidate])
+            @info "fusing candidate $(candidate) into generator set index $(idx_steane_take) with current starting index $(s[1])"
         end
-    end
-
-    if notadded
-        # Use pre-computed mapping
-        potential_gen_idcs = CLIENT_TO_GENERATORS[candidate]
-        # Find generator with smallest progress
-        min_length = typemax(Int)
-        idx = potential_gen_idcs[1]
-        for gen_idx in potential_gen_idcs
-            len = length(state.progress[gen_idx])
-            if len < min_length
-                min_length = len
-                idx = gen_idx
-            end
+        if length(s) == length(steane_generators[idx_steane_take])
+            @info "Generator set $(idx_steane_take) completed with clients $(s), projecting out piecemaker qubit"
+            @yield @process projectout(sim, net, s[1], idx_steane_take, length(s), state)
         end
-        push!(state.progress[idx], Vector{Int}([candidate]))
     end
 end
 
@@ -152,7 +137,7 @@ end
             if !isnothing(counterpart)
                 slot, _, _ = counterpart
                 @yield @process GeneratorServiceProt(sim, net, slot.idx, state, steane_generators, cutoff)
-                @debug "Sorted client $(slot.idx) into generator sets, current progress: $(state.progress)"
+                @info "Sorted client $(slot.idx) into generator sets, current progress: $(state.progress)"
             else
                 break
             end
@@ -168,19 +153,18 @@ end
         if !isnothing(isdonemessage)
             genset = steane_generators[isdonemessage[3][2]]
             n_clients_in_set = isdonemessage[3][3]
-            @debug "received Zdone tag: $(isdonemessage)"
+            @info "received Zdone tag: $(isdonemessage)"
             
             discarded = true
             fidelity = 0.0
             
             # Measure fidelity
             if length(genset) != n_clients_in_set
-                @debug "MEASURE OUT BEFORE COMPLETION $(state.to_be_measured[1])"
+                @info "MEASURE OUT BEFORE COMPLETION $(state.to_be_measured[1])"
                 clients_to_measure = state.to_be_measured[1]
                 @yield reduce(&, [lock(net[1+i][1]) for i in clients_to_measure])
                 obs_proj = SProjector(StabilizerState(ghzs[length(clients_to_measure)]))
                 fidelity = real(observable([net[1+i][1] for i in clients_to_measure], obs_proj))
-                # Single cleanup - FIXED: removed double unlock
                 for i in clients_to_measure
                     traceout!(net[1 + i][1])
                     unlock(net[1 + i][1])
@@ -189,8 +173,7 @@ end
                 @yield reduce(&, [lock(net[1+i][1]) for i in genset])
                 obs_proj = SProjector(StabilizerState(ghzs[n_clients_in_set]))
                 fidelity = real(observable([net[1+i][1] for i in genset], obs_proj))
-                @debug "clients serviced: $(genset) --> fidelity: $(fidelity)"
-                # Single cleanup - FIXED: removed double unlock
+                @info "clients serviced: $(genset) --> fidelity: $(fidelity)"
                 for i in genset
                     traceout!(net[1 + i][1])
                     unlock(net[1 + i][1])
@@ -200,7 +183,7 @@ end
             
             timesteps = now(sim)
             push!(state.logs, (timesteps, popfirst!(state.to_be_measured), fidelity, discarded))
-            @debug "Updated progress: $(state.progress)"
+            @info "Updated progress: $(state.progress)"
         end
     end
 end
@@ -214,7 +197,7 @@ end
         if !isnothing(msg1) || !isnothing(msg2)
             if !isnothing(msg1)
                 value = msg1[3][2]
-                @debug "X received at client $(client), with value $(value)"
+                @info "X received at client $(client), with value $(value)"
                 @yield lock(net[1+client][1])
                 if value == 2
                     apply!(net[1+client][1], X, time = now(sim))
@@ -224,16 +207,16 @@ end
             end
             
             if !isnothing(msg2)
-                @debug "Z received at client $(client)"
+                @info "Z received at client $(client)"
                 value = msg2[3][2]
                 gen_set_idx = msg2[3][3]
                 n_clients_in_set = msg2[3][4]
-                @debug "Z received at client $(client), with value $(value), gen_set_idx=$(gen_set_idx), n_clients_in_set=$(n_clients_in_set)"
+                @info "Z received at client $(client), with value $(value), gen_set_idx=$(gen_set_idx), n_clients_in_set=$(n_clients_in_set)"
                 @yield lock(net[1+client][1])
                 if value == 2
-                    # noisyZ = NonInstantGate(Z, tXZ)
+                    # noisyZ = NonInstantGate(Z, Δt_XZ)
                     apply!(net[1+client][1], Z, time = now(sim))
-                    @yield timeout(sim, tXZ)
+                    # @yield timeout(sim, Δt_XZ)
                 end
                 unlock(net[1+client][1])
                 tag!(net[1][1], Tag(:Zdone, gen_set_idx, n_clients_in_set))
@@ -248,7 +231,7 @@ function prepare_sim(n, T_link, cutoff::Float64, F_link::Float64, link_success_p
 
     # Initialize simulation state
     state = SimulationState(
-        [Vector{Vector{Int}}() for _ in 1:length(steane_generators)],
+        [Vector{Int}() for _ in 1:length(steane_generators)],
         Vector{Vector{Int}}(),
         Vector{Tuple{Float64, Vector{Int}, Float64, Bool}}()
     )
@@ -266,8 +249,8 @@ function prepare_sim(n, T_link, cutoff::Float64, F_link::Float64, link_success_p
         entangler = EntanglerProt(
             sim = sim, net = net, nodeA = 1, chooseA = i, nodeB = 1 + i, chooseB = 1, 
             pairstate = noisy_bell_state(F_link),
-            success_prob = link_success_prob, rounds = -1, attempts = -1, attempt_time = 1e-5,#1.2e-6,
-            retry_lock_time = 1e-6, local_busy_time_post = 0.0
+            success_prob = link_success_prob, rounds = -1, attempts = -1, attempt_time = 50e-9, # 8-10 ns
+            retry_lock_time = 5e-9, local_busy_time_post = 0.0
         )
 
         @process entangler()
@@ -280,23 +263,21 @@ function prepare_sim(n, T_link, cutoff::Float64, F_link::Float64, link_success_p
     return sim, state
 end
 
-# Main simulation, measures everything in seconds (s)
-steane_generators = [[1,2,3,5], [1,2,4,6], [2,3,4,7]]
-toric_code_generators = [[1,2,4,5], [2,3,5,6], [1,3,4,6]]
 
 n = 7
 
-tCNOT = 1e-3 
-tXZ = 1e-3 
-tmeas = 1e-5 # 10 microseconds
-cutoff_times = [Inf]#[0.01, 0.1, Inf] # s
+Δt_CNOT = 100e-6 # 100 µs
+Δt_XZ = 10e-6 # 10 µs 
+Δt_meas = 100e-9 # 100 ns
+F_link = 1.0
+Δt_cutoff_list = [1e-3] # 1 ms cutoff 
 
 dataframes = DataFrame[]
-for link_success_prob in [1e-4]#[2e-4, 1e-3, 1e-2, 1e-1]
-    for T_coherence in [10.0]#[0.01, 0.1, 1.0]
-        for F_link in [0.97]#[0.941, 0.96, 0.98, 0.99, 0.999]
-            for cutoff in cutoff_times
-                runtime = 1e-4/link_success_prob
+for link_success_prob in [0.001]#, 1e-2, 1e-1]
+    for T_coherence in [10e-3]#, 100e-3, 1.0] # 1 ms, 100 ms, 1 s
+        for F_link in [0.98]#, 0.999, 1.0]
+            for cutoff in Δt_cutoff_list
+                runtime = 0.01
                 sim, state = prepare_sim(n, T_coherence, cutoff, F_link, link_success_prob, steane_generators)
                 t_wallclock = @elapsed run(sim, runtime)
                 
@@ -306,52 +287,38 @@ for link_success_prob in [1e-4]#[2e-4, 1e-3, 1e-2, 1e-1]
 
                 logs[!, "link_success_prob"] .= link_success_prob
                 logs[!, "runtime"] .= runtime
-                logs[!, "tCNOT"] .= tCNOT
+                logs[!, "tCNOT"] .= Δt_CNOT
                 logs[!, "T_coherence"] .= T_coherence
                 logs[!, "F_link"] .= F_link
                 logs[!, "cutoff"] .= cutoff
                 logs[!, "wallclock_time"] .= t_wallclock
 
                 push!(dataframes, logs)
-                @info "completed simulation for link_success_prob=$(link_success_prob), T_CNOT=$(tCNOT), T_coherence=$(T_coherence), F_link=$(F_link), cutoff=$(cutoff), wallclock=$(t_wallclock)s, collected $(nrow(logs)) logs"
+                @info "completed simulation for link_success_prob=$(link_success_prob), T_CNOT=$(Δt_CNOT), T_coherence=$(T_coherence), F_link=$(F_link), cutoff=$(cutoff), wallclock=$(t_wallclock)s, collected $(nrow(logs)) logs"
             end
         end
     end
 end
 
 alllogs = vcat(dataframes...)
-@debug "Summary statistics:"
-@debug describe(alllogs)
+@info "Summary statistics:"
+@info describe(alllogs)
 ##
 using StatsPlots
 using LaTeXStrings
 
-successful_logs = alllogs[alllogs.discarded .== false, :]
-successful_logs_tCNOT500 = successful_logs[successful_logs.tCNOT .== 10e-6, :]
-grouped_logs = groupby(successful_logs_tCNOT500, [:link_success_prob, :T_coherence, :F_link])
+successful_logs = alllogs[.!alllogs.discarded, :]
 
-# for grp in grouped_logs
-#     p = @df grp groupedhist(:GHZfidel,
-#         group = :cutoff,
-#         bar_position=:stack,
-#         bins=6,
-#         title=L"$p_{link}=%$(first(grp.link_success_prob)), T_{decoh}=%$(first(grp.T_coherence)), F_{link}=%$(first(grp.F_link))$",
-#         xlabel=L"\mathrm{GHZ\ Fidelity}",
-#         ylabel=L"\mathrm{Count}",
-#         labels=reshape([isinf(t) ? "no cutoff" : L"t_{\mathrm{GHZ}} = %$(t*1000) \mathrm{ms}" for t in sort(unique(grp.cutoff))], 1, :),
-#     )
-#     savefig(p, "groupedhiscutofffidelity_LinkProb$(first(grp.link_success_prob))_tCNOT$(first(grp.tCNOT))_Tcoh$(first(grp.T_coherence))_Flink$(first(grp.F_link)).pdf")
-# end
-
-
-combined_logs = combine(groupby(successful_logs_tCNOT500, [:F_link, :link_success_prob, :runtime, :T_coherence, :cutoff]),
+combined_logs = combine(groupby(successful_logs, [:F_link, :T_coherence, :cutoff, :runtime, :link_success_prob]),
     :GHZfidel => mean => :mean_fidelity,
     :GHZfidel => (x -> std(x) / sqrt(length(x))) => :std_error,
     :GHZfidel => std => :std_dev,
     nrow => :rate
 )
 combined_logs.rate .= combined_logs.rate ./ combined_logs.runtime  # Convert count to rate (Hz)
+combined_logs[!, "Infidelity"] = 1 .- combined_logs.mean_fidelity
 
+##
 for F_link in unique(combined_logs.F_link)
     subset = combined_logs[combined_logs.F_link .== F_link, :]
     
@@ -401,8 +368,12 @@ for F_link in unique(combined_logs.F_link)
         plot_titlevspan = 0.08,
         plot_titlefontsize = 14)
     
-    savefig(final_plot, "mean_GHZfidelity_Flink$(F_link)_tCNOT500.pdf")
+    savefig(final_plot, "mean_GHZfidelity_Flink$(F_link)_Δt_CNOT500.pdf")
 end
+##
+pl = @df combined_logs plot(:T_coherence, :Infidelity, yerr = :std_dev, group = :F_link,  xscale = :log10, yscale = :log10, xlabel ="Coherence time (s)", ylabel= L"1-F", legendtitle = L"F_{start}")
+savefig(pl, "mean_GHZfidelity.pdf")
+
 
 ##
 using Statistics
@@ -445,7 +416,7 @@ sort!(correlations, :abs_correlation, rev=true)
 @info correlations
 
 # Analyze each parameter
-successful_logs_clean = successful_logs_tCNOT500[.!isnan.(successful_logs_tCNOT500.GHZfidel), :]
+successful_logs_clean = successful_logs_Δt_CNOT500[.!isnan.(successful_logs_Δt_CNOT500.GHZfidel), :]
 
 params = [:F_link, :link_success_prob, :T_coherence, :cutoff]
 effects = DataFrame(
@@ -630,7 +601,7 @@ end
 threshold_fidelity = 0.95
 
 # Get mean fidelity for each parameter combination
-param_combinations = combine(groupby(successful_logs_tCNOT500, 
+param_combinations = combine(groupby(successful_logs_Δt_CNOT500, 
     [:F_link, :link_success_prob, :T_coherence, :cutoff]),
     :GHZfidel => mean => :mean_fidelity,
     :GHZfidel => std => :std_fidelity,
@@ -691,7 +662,7 @@ for cutoff_val in sort(unique(param_combinations.cutoff))
         
         if nrow(data) > 0
             # Create pivot: F_link vs link_success_prob
-            pivot_data = unstack(data, :link_success_prob, :F_link, :mean_fidelity)
+            pivot_data = unk(data, :link_success_prob, :F_link, :mean_fidelity)
             
             # Convert to matrix for heatmap
             f_link_vals = sort(unique(data.F_link))

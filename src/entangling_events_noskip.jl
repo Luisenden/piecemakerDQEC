@@ -8,19 +8,30 @@ using StatsBase
 using StatsPlots
 using Random
 
+const perfect_pair = (Z1⊗Z1 + Z2⊗Z2) / sqrt(2)
+keep_trying = true
 
-@resumable function tb_entangler(sim, net, n, link_success_prob, α, rounds=1) # rounds =1 for settings where time bin has a fixed association with attempts of a unique node; when time bins are 'not skipped' (i.e., as soon as one node has been successful a any other node can overtake that time bin) set rounds = -1
-    if n * α <= 1.0
+@resumable function keep_entangling(sim, net, link_success_prob, α)
+    while true
+        length(idcs_to_retry) == 0 && break
+        @yield @process noskip_entangler(sim, net, link_success_prob, α) # launch first entanglement attempt sequentially on all nodes
+        @info "Launched entanglement attempts for slots $(idcs_to_retry) at $(now(sim)). Wait for entangling events to arrive and check which slots need to retry."
+    end
+    return
+end
+
+@resumable function noskip_entangler(sim, net, link_success_prob, α) 
+    if length(idcs_to_retry) * α <= 1.0
         attempt_time = 1.0
     else
-        attempt_time = n * α
+        attempt_time = length(idcs_to_retry) * α
     end
-
+    
     entanglers = EntanglerProt[]
-    for i in 1:n
+    for i in idcs_to_retry
         entangler = EntanglerProt(
-            sim = sim, net = net, nodeA = 1, chooseA = i, nodeB = 1 + i, chooseB = 1,
-            success_prob = link_success_prob, rounds = rounds, attempts = -1, attempt_time = attempt_time,
+            sim = sim, net = net, nodeA = 1 + i, chooseA = 1, nodeB = 1, chooseB = i,
+            success_prob = link_success_prob, rounds = 1, attempts = 1, attempt_time = attempt_time,
             local_busy_time_pre = 0.0, local_busy_time_post = 0.0, retry_lock_time = 0.001,
         )
         push!(entanglers, entangler)
@@ -32,43 +43,47 @@ using Random
     end
 end
 
-@resumable function BellPairTracker(sim, net, n, link_success_prob, logging::DataFrame)
-    count = 0
-    first_arrival_time = 0.0
-    last_arrival_time = 0.0
-    while true
+@resumable function BellPairNoiseProt(sim, net, n, link_success_prob, logging::DataFrame)
+
+    fidelities = Float64[]
+    arrived_pairs = RegRef[]
+
+    while length(arrived_pairs) ≤ n
+        keeptrying = true
+        
         @yield onchange_tag(net[1])
-        current_time_stamp = now(sim)
+        keep_trying = false
         while true
             msg = querydelete!(net[1], EntanglementCounterpart, ❓, ❓)
             if isnothing(msg)
+                @info "No new Bell pair established at $(now(sim)). Wait for next entanglement attempt to complete and check again."
                 break
             end
-            slot, _, _ = msg
-            @debug "New Bell pair established between switch and client $(slot.idx)"    
-            count += 1
-            if count == 1
-                first_arrival_time = current_time_stamp
-            end
-            if count > n-1
-                @debug "All Bell pairs established at $(now(sim)). Clear states and reset counter"
-                last_arrival_time = current_time_stamp
-                time_diff = last_arrival_time - first_arrival_time
-                @debug "Time difference between first and last entangling event: $(time_diff)"
-                push!(logging, (n = n, p = link_success_prob, first_arrival = first_arrival_time, last_arrival = last_arrival_time, time_diff = time_diff))
-                count = 0
+            slot, _, _ = msg  
+            pop!(idcs_to_retry, slot.idx)  
+            push!(arrived_pairs, slot)
+            @info "New Bell pair established between switch and client message: $(msg)."
+            if length(arrived_pairs) > n-1
+                @info "All Bell pairs established at $(now(sim)). Calculate fidelities, clear states and reset tracker."
+                for slot in arrived_pairs
+                    fidel = real(observable([slot, net[1+slot.idx][1]], projector(perfect_pair)))
+                    push!(fidelities, fidel)
+                end
+                push!(logging, (n = n, p = link_success_prob, fidelities = fidelities))
+                @info "RETURN"
                 return
             end
         end
+        @info "Slots that need to retry entanglement attempt: $(idcs_to_retry). $(arrived_pairs) have been successful so far."
     end
 end
 
-function prepare_sim(n, link_success_prob, logging, α, rounds)
+function prepare_sim(n, link_success_prob, logging, α, λ)
 
     states_representation = QuantumOpticsRepr()
     
-    T_link = 10
-    noise_model = Depolarization(T_link) # noise model applied to the memory qubits
+    T2time = -1/log(λ)
+    noise_model = T2Dephasing(T2time) # noise model applied to the memory qubits
 
     # Network setup
     switch = Register([Qubit() for _ in 1:n], [states_representation for _ in 1:n], [noise_model for _ in 1:n])
@@ -80,23 +95,25 @@ function prepare_sim(n, link_success_prob, logging, α, rounds)
     # Discrete event simulation
     sim = get_time_tracker(net)
 
-    @process BellPairTracker(sim, net, n, link_success_prob, logging)
-    @process tb_entangler(sim, net, n, link_success_prob, α, rounds)
-
+    @process keep_entangling(sim, net, link_success_prob, α)
+    @process BellPairNoiseProt(sim, net, n, link_success_prob, logging)
     return sim, logging
 end
 
-
-## sim sequential attempts
+## sim non skipped time bins
 n = 7
-α = 0.2
+α = 1.0 # sequential share
+λ = 0.9 # noise parameter for T2 dephasing
 
-ntrials = 100
+n = 7
+idcs_to_retry = Set(1:n)
+
+ntrials = 1
 dfs = DataFrame[]
-for p in range(0.05, stop=1.0, length=20)
+for p in [0.2]#range(0.05, stop=1.0, length=2)
     for _ in 1:ntrials
-        logging = DataFrame(n = Int[], p = Float64[], first_arrival = Float64[], last_arrival = Float64[], time_diff = Float64[])
-        sim, logging = prepare_sim(n, p, logging, α, 1)
+        logging = DataFrame(n = Int[], p = Float64[], fidelities = Vector{Float64}[])
+        sim, logging = prepare_sim(n, p, logging, α, λ)
         timed = @elapsed run(sim)
         push!(dfs, logging)
         @info "Simulation completed in $(timed) seconds for p=$(p)"
