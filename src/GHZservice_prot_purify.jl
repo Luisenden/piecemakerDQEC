@@ -10,6 +10,8 @@ using NetworkLayout
 using DataFrames
 using Statistics
 using Plots
+using JLD2
+using DataFrames, StatsPlots, Statistics
 
 const ghzs = [ghz(n) for n in 1:10] # make const in order to not build new every time
 
@@ -150,7 +152,7 @@ end
                     @warn "For client $(i), did NOT find expected counterpart tag."
                 end
             end
-            @info "Progress: $(state). Generator set $(idx_generator_take) completed with clients $(s), projecting out piecemaker qubit"
+            @debug "Progress: $(state). Generator set $(idx_generator_take) completed with clients $(s), projecting out piecemaker qubit"
             @process projectout(sim, net, s[1], idx_generator_take, length(s), state)
         end
     else
@@ -162,8 +164,7 @@ end
 @resumable function PurifyProt(sim, net, candidate::Int, state::SimulationState)
     gen_idx = findfirst(i -> candidate ∈ state.progress[i], 1:length(state.progress))
 
-    if isnothing(gen_idx)
-        state.orphan_purif_pairs += 1
+    if isnothing(gen_idx) # this can happen if the purification request arrives after the generator set has been completed and projected out, in which case we just count it as an orphan purification pair
         @yield lock(net[1][candidate]) & lock(net[1 + candidate][2])
         project_traceout!(net[1][candidate], σˣ)
         project_traceout!(net[1 + candidate][2], σˣ)
@@ -195,11 +196,11 @@ end
     unlock(net[1 + candidate][1])
     unlock(net[1 + candidate][2])
 
-    if res1 == res2
+    if res1 == 2 && res1 == res2 # we only accept states that correspond to the (+,+) eigenspaces of the ZZ stabilizers
         state.purif_counts[gen_idx] += 1
         @debug "Purification successful for candidate $(candidate); count now $(state.purif_counts[gen_idx])"
     else
-        @warn "Purification failed for candidate $(candidate), projecting out with clients $(s)"
+        @debug "Purification failed for candidate $(candidate), projecting out with clients $(s)"
         @yield @process projectout(sim, net, state.progress[gen_idx][1], gen_idx, length(state.progress[gen_idx]), state)
     end
 end
@@ -278,9 +279,9 @@ end
             fidelity = real(observable([net[1 + i][1] for i in clients_to_measure], obs_proj))
 
             if discarded
-                @info "MEASURE OUT BEFORE COMPLETION $(clients_to_measure), progress: $(state.progress)"
+                @debug "MEASURE OUT BEFORE COMPLETION $(clients_to_measure), progress: $(state.progress)"
             else
-                @info "clients serviced: $(clients_to_measure) --> fidelity: $(fidelity)"
+                @debug "clients serviced: $(clients_to_measure) --> fidelity: $(fidelity)"
             end
 
             for i in clients_to_measure
@@ -435,7 +436,6 @@ function prepare_sim(n::Int, T_link::Float64, cutoff::Float64, F_link::Float64, 
 end
 
 ##
-using JLD2
 n = 7
 
 Δt_CNOT = 100e-6  # 100 µs
@@ -444,13 +444,13 @@ n = 7
 Δt_cutoff_list = [Inf]
 
 dataframes = DataFrame[]
-for purify in [false, true]
+for purify in [false]
     for attempt_time in [1e-6]
-        for link_success_prob in [0.0001]#, 0.001, 0.01, 0.1, 1.0]
-            for T_coherence in [Inf]#, 0.01, 0.001]
-                for F_link in [1.0]#, 0.99, 0.97, 0.9, 0.8, 0.7, 0.5]
+        for link_success_prob in [0.0001]
+            for T_coherence in [100.0]
+                for F_link in [1.0- 2.5^(-x) for x in 1.0:6.0]
                     for cutoff in Δt_cutoff_list
-                        runtime = 0.1# * -log10(0.1*link_success_prob^2)
+                        runtime = 10.0# * -log10(0.1*link_success_prob^2)
                         sim, state = prepare_sim(n, T_coherence, cutoff, F_link, link_success_prob, steane_generators, attempt_time, purify)
                         t_wallclock = @elapsed run(sim, runtime)
 
@@ -478,9 +478,9 @@ for purify in [false, true]
                         logs[!, "wallclock_time"] .= t_wallclock
                         logs[!, "purify"] .= purify
                         
-                        @save "GHZservice_purification_trial_logs_$(purify)_$(link_success_prob)_$(T_coherence)_$(F_link).csv" logs
+                        @save "GHZservice_purification_trial_logs_$(purify)_$(link_success_prob)_$(T_coherence)_$(F_link)_runtime_$(runtime).jld2" logs
                         push!(dataframes, logs)
-                        @debug "completed simulation for link_success_prob=$(link_success_prob), T_CNOT=$(Δt_CNOT), T_coherence=$(T_coherence), F_link=$(F_link), cutoff=$(cutoff), wallclock=$(t_wallclock)s, collected $(nrow(logs)) logs"
+                        @info "completed simulation for link_success_prob=$(link_success_prob), T_CNOT=$(Δt_CNOT), T_coherence=$(T_coherence), F_link=$(F_link), cutoff=$(cutoff), wallclock=$(t_wallclock)s, collected $(nrow(logs)) logs"
                     end
                 end
             end
@@ -489,37 +489,3 @@ for purify in [false, true]
 end
 
 alllogs = vcat(dataframes...)
-
-
-## plott purfied vs unpurified fidelity for bell pairs and GHZ states
-using DataFrames, StatsPlots, Statistics
-
-df = alllogs[alllogs.discarded .== false, :]
-df.infidel_log = 1 .- df.GHZfidel
-
-# mean/std for each (T_coherence, purify)
-summ = combine(groupby(df, [:T_coherence, :purify]),
-    :infidel_log => mean => :μ,
-    :infidel_log => std  => :σ,
-)
-
-@df summ scatter(
-    :T_coherence, :μ,
-    group = :purify,
-    yerror = :σ,
-    xscale = :log10, yscale = :log10,
-    xlabel = "Coherence Time (s)",
-    ylabel = "1 - GHZ Fidelity",
-    legendtitle = "Purified",
-    legend = :outertopright,
-)
-## calcuate statistcs grouped by purify
-grouped_stats = combine(groupby(alllogs, :purify), [
-    :GHZfidel => mean => :mean_fidelity,
-    :GHZfidel => std => :std_fidelity,
-    :orphan_purif_pairs => maximum => :max_orphan_purif_pairs
-])
-
-##
-using CSV
-df1 = CSV.read("GHZservice_purification_trial_logs.csv") |> DataFrame

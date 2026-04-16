@@ -2,42 +2,6 @@ using QuantumSavory
 using QuantumSavory: Register, StabilizerState
 using QuantumSavory.CircuitZoo: Purify2to1Node
 using QuantumClifford: ghz
-##
-bell_pair = StabilizerState("XX ZZ")
-perfect_pair_dm = SProjector(bell_pair)
-mixed_dm = MixedState(perfect_pair_dm)
-noisy_pair_func(λ) = λ*perfect_pair_dm + (1-λ)*mixed_dm
-
-F_ins = []
-F_outs = []
-for λ in 0.9:0.9#1/3:0.1:1.0
-    while true
-        F_in = (1+3*λ)/4
-        reg1 = Register(2)
-        reg2 = Register(2)
-        initialize!([reg1[1], reg2[1]], noisy_pair_func(λ))
-        initialize!([reg1[2], reg2[2]], noisy_pair_func(λ))
-
-        resX = Purify2to1Node(:X)(reg1[1:2]...) == Purify2to1Node(:X)(reg2[1:2]...)
-
-        initialize!([reg1[2], reg2[2]], noisy_pair_func(λ))
-        resZ = Purify2to1Node(:X)(reg1[1:2]...) == Purify2to1Node(:X)(reg2[1:2]...)
-
-        if resX && resZ
-            fidel = real(observable([reg1[1], reg2[1]], perfect_pair_dm))
-            @info "λ = $λ, F_in = $F_in, F_out = $fidel"
-            push!(F_ins, F_in)
-            push!(F_outs, fidel)
-            break
-        end
-    end
-end
-
-## plotting
-using Plots
-F_diffs = F_outs .- F_ins
-scatter(F_ins, F_diffs, xlabel="Fidelity In", ylabel="Fidelity Out", title="Purification Trial")
-#plot!(0.25:0.01:1.0, x -> x, label="F_out = F_in", linestyle=:dash)
 
 ## GHZ purification using bell pairs
 
