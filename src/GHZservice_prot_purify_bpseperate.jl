@@ -30,6 +30,24 @@ const CLIENT_TO_GENERATORS = Dict(
     7 => [3]
 )
 
+# Costum tag to send measurement information to logger
+# struct OpenMeasurement
+#     gen_set_idx::Int
+#     clients::Vector{Int}
+#     discarded::Bool
+#     num_purifications::Int
+#     orphan_purif_pairs::Int
+#     meas_id::Int
+# end
+# Base.show(io::IO, x::OpenMeasurement) =
+#     print(io, "OpenMeasurement(gen_set_idx=$(x.gen_set_idx), meas=$(x.meas_id), clients=$(x.clients), discarded=$(x.discarded), num_purifications=$(x.num_purifications))")
+
+# Costum tag to track association of clients to generator sets
+# struct HomeGeneratorSet
+#     gen_set_idx::Int
+#     creation_time::Float64
+# end
+
 # Snapshot of a state that is about to be measured/logged
 struct PendingMeasurement
     clients::Vector{Int}
@@ -145,7 +163,7 @@ end
 
             # Delete remaining counterpart tags for the clients being measured, as this indicates the end of the states lifetime
             for i in s
-                counterpart = querydelete!(net[1 + i][1], EntanglementCounterpart, ❓, ❓)
+                counterpart = querydelete!(net[1 + i][1], EntanglementCounterpart, ❓, ❓; filo = false)
                 if !isnothing(counterpart)
                     @debug "For client $(i), found and DELETED TAG counterpart tag: $(counterpart)"
                 else
@@ -210,7 +228,7 @@ end
         @yield onchange_tag(net[1])
 
         while true
-            counterpart = querydelete!(net[1], EntanglementCounterpart, ❓, ❓)
+            counterpart = querydelete!(net[1], EntanglementCounterpart, ❓, ❓; filo = false)
             @debug "Current progress: $(state.progress)"
             if !isnothing(counterpart)
                 @debug "Received EntanglementCounterpart tag: $(counterpart)"
@@ -240,7 +258,7 @@ end
 @resumable function wait_for_xdone_clients(sim, net, clients::Vector{Int})
     for client in clients
         while true
-            is_xdone = querydelete!(net[1 + client][1], :Xdone, ❓)
+            is_xdone = querydelete!(net[1 + client][1], :Xdone, ❓; filo = false)
             if !isnothing(is_xdone)
                 @debug "Received Xdone tag from client $(client)"
                 break
@@ -254,7 +272,7 @@ end
 @resumable function listen_log(sim, net, state::SimulationState, steane_generators)
     while true
         @yield onchange_tag(net[1])
-        isdonemessage = querydelete!(net[1], :Zdone, ❓, ❓, ❓)
+        isdonemessage = querydelete!(net[1], :Zdone, ❓, ❓, ❓; filo = false)
 
         if !isnothing(isdonemessage)
             gen_set_idx = isdonemessage[3][2]
@@ -309,8 +327,8 @@ end
 @resumable function correct_and_inform(sim, net::RegisterNet, client::Int)
     while true
         @yield onchange_tag(net[1 + client][1])
-        msg1 = querydelete!(net[1 + client][1], :updateX, ❓)
-        msg2 = querydelete!(net[1 + client][1], :updateZ, ❓, ❓, ❓, ❓)
+        msg1 = querydelete!(net[1 + client][1], :updateX, ❓; filo = false)
+        msg2 = querydelete!(net[1 + client][1], :updateZ, ❓, ❓, ❓, ❓; filo = false)
 
         if !isnothing(msg1) || !isnothing(msg2)
             if !isnothing(msg1)
@@ -444,13 +462,13 @@ n = 7
 Δt_cutoff_list = [Inf]
 
 dataframes = DataFrame[]
-for purify in [false]
+for purify in [true]
     for attempt_time in [1e-6]
         for link_success_prob in [0.0001]
-            for T_coherence in [100.0]
+            for T_coherence in [10.0]
                 for F_link in [1.0- 2.5^(-x) for x in 1.0:6.0]
                     for cutoff in Δt_cutoff_list
-                        runtime = 10.0# * -log10(0.1*link_success_prob^2)
+                        runtime = 1.0# * -log10(0.1*link_success_prob^2)
                         sim, state = prepare_sim(n, T_coherence, cutoff, F_link, link_success_prob, steane_generators, attempt_time, purify)
                         t_wallclock = @elapsed run(sim, runtime)
 

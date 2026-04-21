@@ -5,7 +5,7 @@ using Plots.PlotMeasures: mm
 using LaTeXStrings
 
 ## load jld2 files from output directory
-path = "./"#"/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_scan_runtime1second/"
+path = "./output_10++/"
 files = readdir(path)
 dataframes = DataFrame[]
 for file in files
@@ -23,20 +23,20 @@ df = df[df[!, :discarded] .== false, :]
 df.infidel_log = 1 .- df.GHZfidel
 
 # mean/std for each (T_coherence, purify)
-summ = combine(groupby(df, [:F_link, :purify, :T_coherence]),
-    :infidel_log => mean => :μ,
-    :infidel_log => std  => :σ,
-    nrow => :nlogs
-)
-summ[!, :se] = summ.σ ./ sqrt.(summ.nlogs)
-
-# mean/std for each (T_coherence, purify)
 # summ = combine(groupby(df, [:F_link, :purify, :T_coherence]),
-#     :GHZfidel => mean => :μ,
-#     :GHZfidel => std  => :σ,
+#     :infidel_log => mean => :μ,
+#     :infidel_log => std  => :σ,
 #     nrow => :nlogs
 # )
 # summ[!, :se] = summ.σ ./ sqrt.(summ.nlogs)
+
+# mean/std for each (T_coherence, purify)
+summ = combine(groupby(df, [:F_link, :purify, :T_coherence]),
+    :GHZfidel => mean => :μ,
+    :GHZfidel => std  => :σ,
+    nrow => :nlogs
+)
+summ[!, :se] = summ.σ ./ sqrt.(summ.nlogs)
 
 summ = summ[(summ.F_link .> 0.5) .& (summ.F_link .< 1.0), :]
 # make subplot per T_coherence, with purified vs unpurified as different series
@@ -45,7 +45,7 @@ p = plot(
     layout = (1, length(Ts)),
     link = :y,
     size = (350 * length(Ts), 400),
-    margin = 4mm
+    margin = 10mm
 )
 
 for (i, T) in enumerate(Ts)
@@ -53,22 +53,23 @@ for (i, T) in enumerate(Ts)
     @info summ_T
     @df summ_T scatter!(
         p[i],
-        :F_link, :μ,
+        :F_link, :nlogs,
         group = :purify,
-        yerror = :σ,
-        yscale = :log10,
+        # yerror = :se,
+        # yscale = :log10,
         xlabel = "Bell pair fidelity "* L"$F_{link}$",
-        ylabel = i == 1 ? "GHZ Infidelity "* L"$(1-F_{\mathrm{GHZ}})$" : "",
+        ylabel = i == 1 ? "State count" : "",
         title = L"$T_{depol} =$" * "$(T) s",
         legendtitle = "Purify",
         legend = i == length(Ts) ? :outerbottomright : false, 
-        ylims = (1e-2, 1e-0),
+        # ylims = (1e-2, 1e-0),
         xlims = (0.8, 1.0),
         minorgrid = true
     )
 end
 
 display(p)
+savefig(p, "GHZ_purification_nlogs.pdf")
 
 ## plot the number of discarded states per second for each (T_coherence, purify)
 df_range = df[(df.F_link .> 0.5) .& (df.F_link .<= 0.9), :]
