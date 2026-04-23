@@ -462,13 +462,13 @@ n = 7
 Δt_cutoff_list = [Inf]
 
 dataframes = DataFrame[]
-for purify in [true]
+for purify in [false]
     for attempt_time in [1e-6]
         for link_success_prob in [0.0001]
-            for T_coherence in [10.0]
-                for F_link in [1.0- 2.5^(-x) for x in 1.0:6.0]
+            for T_coherence in [Inf]
+                for F_link in [0.84]#[1.0- 2.5^(-x) for x in 1.0:6.0]
                     for cutoff in Δt_cutoff_list
-                        runtime = 1.0# * -log10(0.1*link_success_prob^2)
+                        runtime = 10.0# * -log10(0.1*link_success_prob^2)
                         sim, state = prepare_sim(n, T_coherence, cutoff, F_link, link_success_prob, steane_generators, attempt_time, purify)
                         t_wallclock = @elapsed run(sim, runtime)
 
@@ -507,3 +507,11 @@ for purify in [true]
 end
 
 alllogs = vcat(dataframes...)
+
+##
+summ = combine(groupby(alllogs, [:F_link, :purify, :T_coherence]),
+    :GHZfidel => mean => :μ,
+    :GHZfidel => std  => :σ,
+    nrow => :nlogs
+)
+summ[!, :se] = summ.σ ./ sqrt.(summ.nlogs)

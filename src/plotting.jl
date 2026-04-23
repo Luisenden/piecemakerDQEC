@@ -53,12 +53,13 @@ for (i, T) in enumerate(Ts)
     @info summ_T
     @df summ_T scatter!(
         p[i],
-        :F_link, :nlogs,
+        :F_link, :μ,
+        yerror = :se,
         group = :purify,
         # yerror = :se,
         # yscale = :log10,
         xlabel = "Bell pair fidelity "* L"$F_{link}$",
-        ylabel = i == 1 ? "State count" : "",
+        ylabel = i == 1 ? "GHZ Fidelity" : "",
         title = L"$T_{depol} =$" * "$(T) s",
         legendtitle = "Purify",
         legend = i == length(Ts) ? :outerbottomright : false, 
