@@ -46,8 +46,8 @@ function noisy_bell_state(target_fidelity::Float64=0.97)
 end
 
 struct SwitchSlotInfo
-    clientslot_idx::Int
     switchslot_idx::Int
+    clientslot_idx::Int
     time_of_creation::Float64
 end
 
@@ -59,31 +59,57 @@ end
         for pm_msg in pm_msgs
             @info "consume_listener for generator set $(gen_set_index) got pm_msg: $(pm_msg)"
             pm_slot, _, _ = pm_msg
-            msgs = queryall(net[1], :PartOfGenSet, gen_set_index, pm_slot.idx; filo = false)
+            msgs = queryall(net[1], :PartOfGenSet, gen_set_index, pm_slot.idx, ❓; filo = false) # TODO: here we want only one unique generator set, however, if it happens that one slot functions as a piecemaker twice we could get two gen sets --> ACTUALLY if it is the piecemaker then the second bell pair will never arrive! sanity check this in the outcomes!
+            isempty(msgs) && continue
             length(msgs) < 4 && continue
             if length(msgs) == 4 # if there are 4 slots tagged as part of the generator set, we can consume the state
-                allequal([msg[3][3] for msg in msgs]) || error("Not all slots tagged as part of the generator set have the same piecemaker slot idx!")
+                @info "DONE 4: consume_listener for generator set $(gen_set_index) got msgs: $(msgs)"
+                # check that the four switch slots are exactly the correct generator
+                switchslots_idcs = sort([msg[1].idx for msg in msgs])
+                @assert switchslots_idcs == sort(steane_generators[gen_set_index]) "The generator set is not correct."
+                @assert allequal([msg[3][3] for msg in msgs]) "Not all slots tagged as part of the generator set have the same piecemaker slot idx!"
+
+                tagids = [msg[3][4] for msg in msgs]
                 @yield lock(pm_slot)
                 @info "Projecting out piecemaker qubit at slot $(pm_slot.idx) to consume GHZ state for generator set $(gen_set_index)"
                 res = project_traceout!(pm_slot, σˣ)
                 unlock(pm_slot)
 
-                #choose arbitrary client slot idx among the 4 tagged as part of the generator set to apply correction if needed
-                clientslot_idcs = [query(switchslot, SwitchSlotInfo, ❓, ❓, ❓; filo = false)[3][3] for switchslot in [msg[1] for msg in msgs]] 
-                # required TODO: we need something to differentiate between two different tags SwitchSlotInfo for the same slot, as otherwise we might access here the wrong client slot
+                # choose arbitrary client slot idx among the 4 tagged as part of the generator set to apply correction if needed   
+                clientslot_idcs_msgs = [client_msg for switchslotmsg in msgs for client_msg in queryall(net[1][switchslotmsg[1].idx], SwitchSlotInfo, ❓, ❓, ❓; filo=false) if client_msg.id in tagids]
+                clientslot_idcs = [client_msg[3][3] for client_msg in clientslot_idcs_msgs]
+                @info "SWICH SLOT INDICES: $([msg[1].idx for msg in msgs]), CLIENT SLOT INDICES: $clientslot_idcs"
                 
-                clientslots_to_measure = [net[1+switchslot_idx][clientslot_idx] for clientslot_idx in clientslot_idcs for switchslot_idx in [msg[1].idx for msg in msgs]]
+
+                # zip can truncate: If clientslot_idcs has length 3 or 5 because a SwitchSlotInfo tag is missing or duplicated, zip silently truncates. That could produce a smaller/wrong GHZ fidelity calculation without immediately failing.
+                @assert length(clientslot_idcs_msgs) == length(msgs)
+                @assert length(clientslot_idcs) == length(msgs)
+                clientslots_to_measure = [net[1+switchslot_idx][clientslot_idx] for (switchslot_idx, clientslot_idx) in zip([msg[1].idx for msg in msgs], clientslot_idcs)]
                 @info "Measuring client qubits at slots $(clientslot_idcs) to consume GHZ state for generator set $(gen_set_index)"
                 @yield reduce(&, lock.(clientslots_to_measure))
-                clientslot_for_correction_idx = clientslot_idcs[1]
-                if res == 2
-                    apply!(net[1+pm_slot.idx][clientslot_for_correction_idx], Z)
-                end
-                unlock.(clientslots_to_measure)
 
-                obs_proj = SProjector(StabilizerState(ghzs[4]))
+                if res == 2
+                    apply!(first(clientslots_to_measure), Z)
+                end
+
+                @info "CLIENT SLOTS TO MEASURE: $(clientslots_to_measure)"
+                obs_proj = SProjector(StabilizerState(ghzs[length(clientslots_to_measure)]))
                 fidelity = real(observable(clientslots_to_measure, obs_proj))
-                @info "Fidelity of consumed GHZ state for generator set $(gen_set_index): $(fidelity)"
+                for clientslot in clientslots_to_measure
+                    project_traceout!(clientslot, σˣ)
+                end
+
+                # deleting tags TODO: can this be done nicer?
+                for msg in msgs
+                    untag!(net[1], msg.id)
+                end
+                for msg in clientslot_idcs_msgs
+                    untag!(net[1], msg.id)
+                end
+                untag!(net[1], pm_msg.id)
+
+                unlock.(clientslots_to_measure)
+                @info "FIDELITY of consumed GHZ state for generator set $(gen_set_index): $(fidelity)"
                 # we can do some logging here if we want to track consumption times etc.
             else
                 error("The generator set is ill formed as there are more than 4 slots tagged as part of the generator set!")
@@ -108,17 +134,17 @@ end
                 # get corresponding slot idx at client
                 clientslot_idx = taglog[3] 
                 # tag with switch slot info
-                tag!(switchslot, Tag(SwitchSlotInfo, switchslot.idx, clientslot_idx, now(sim)))
-                @yield @process SwitchSlotProt(sim, net, switchslot.idx, clientslot_idx)
+                tagid = tag!(switchslot, Tag(SwitchSlotInfo, switchslot.idx, clientslot_idx, now(sim)))
+                @yield @process SwitchSlotProt(sim, net, switchslot.idx, clientslot_idx, Int(tagid))
             else
                 break
             end
         end
-        @debug "STATE INFO" queryall(net[1], :PartOfGenSet, ❓, ❓; filo = false)
+        @debug "STATE INFO" queryall(net[1], :PartOfGenSet, ❓, ❓, ❓; filo = false)
     end
 end
 
-@resumable function SwitchSlotProt(sim, net, switchslot_idx::Int, clientslot_idx::Int)
+@resumable function SwitchSlotProt(sim, net, switchslot_idx::Int, clientslot_idx::Int, tagid::Int)
     # this is a sequential protocol, meaning that it occupies the switch slots for its duration until it has decided for fusion
     # first it queries all other slots which have a generator set in common for the tag PartOfGenSet 
     # if the answer is 'nothing' it gets tagged with tag isPiecemaker
@@ -132,7 +158,7 @@ end
     # if this protocol is launched on the second bell pair of the slot, it is already part of a generator set, so we need to make sure it is not fused with a state where it already is represented in.
     # we check if it is already part of a state in progress
     gen_set_idx = nothing
-    part_of_gen_set_msg = query(net[1][switchslot_idx], :PartOfGenSet, ❓, ❓; assigned = true, filo = false)
+    part_of_gen_set_msg = query(net[1][switchslot_idx], :PartOfGenSet, ❓, ❓, ❓; assigned = true, filo = false)
     if !isnothing(part_of_gen_set_msg)
         gen_set_idx = part_of_gen_set_msg[3][2]
     end
@@ -144,7 +170,7 @@ end
         if isnothing(gen_set_idx) # if the slot is not part of a gen set yet we can proceed as normal
             push!(pmslot_msgs, pmslot_msg) 
         else # else we filter out the piecemaker slot that is part of the generator set the slot is already represented in
-            isnothing(query(net[1][otherswitchslot_idx], :PartOfGenSet, gen_set_idx, ❓; assigned = true, filo = false)) && push!(pmslot_msgs, pmslot_msg)
+            isnothing(query(net[1][otherswitchslot_idx], :PartOfGenSet, gen_set_idx, ❓, ❓; assigned = true, filo = false)) && push!(pmslot_msgs, pmslot_msg)
         end
     end
     
@@ -153,7 +179,7 @@ end
         @yield lock(net[1][switchslot_idx])
         tag!(net[1][switchslot_idx], Tag(:isPiecemaker))
         gen_set_idx = rand(CLIENT_TO_GENERATORS[switchslot_idx])
-        tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx))
+        tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
         @info "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
         unlock(net[1][switchslot_idx])
     else
@@ -164,7 +190,7 @@ end
         for msg in pmslot_msgs[.!isnothing.(pmslot_msgs)]
             pmslot, _, taglog = msg
             msg_switchinfo = query(pmslot, SwitchSlotInfo, ❓, ❓ ,❓; assigned = true, filo = false)
-            msg_gensetinfo = query(pmslot, :PartOfGenSet, ❓, ❓; assigned = true, filo = false)
+            msg_gensetinfo = query(pmslot, :PartOfGenSet, ❓, ❓, ❓; assigned = true, filo = false)
             isnothing(msg_switchinfo) && error("Switch pmslot $(pmslot.idx) is assigned a tag isPiecemaker but does not have a tag SwitchSlotInfo!")
             isnothing(msg_gensetinfo) && error("Switch pmslot $(pmslot.idx) is assigned a tag isPiecemaker but does not have a tag PartOfGenSet")
             pmslot, _, taglog = msg_switchinfo
@@ -182,28 +208,25 @@ end
             @yield lock(net[1][switchslot_idx])
             tag!(net[1][switchslot_idx], Tag(:isPiecemaker))
             gen_set_idx = rand(CLIENT_TO_GENERATORS[switchslot_idx])
-            tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx))
+            tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
             @info "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
             unlock(net[1][switchslot_idx])
         else
             # in this case we found a piecemaker slot within a suitable generator set and fuse with it
             isnothing(gen_set_idx) && error("Cannot fuse as no generator set was associated!")
-            @yield lock(net[1][switchslot_idx])
-            tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, pmslot_to_fuse_with.idx))
-            @info "Tagging switch slot idx $(switchslot_idx) as part of $(gen_set_idx)"
-            unlock(net[1][switchslot_idx])
-            @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx])
+            @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid)
         end
     end
 end
 
-@resumable function fusion(sim, net, piecemaker_slot::RegRef, clientswitch_slot::RegRef, client_slot::RegRef)
+@resumable function fusion(sim, net, piecemaker_slot::RegRef, clientswitch_slot::RegRef, client_slot::RegRef, gen_set_idx::Int, tagid::Int)
     @yield lock(piecemaker_slot) & lock(clientswitch_slot) & lock(client_slot)
     apply!((piecemaker_slot, clientswitch_slot), CNOT)
     @yield timeout(sim, Δt_CNOT)
     res = project_traceout!(clientswitch_slot, Z)
     @yield timeout(sim, Δt_meas)
-    tag!(client_slot, Tag(:updateX, res))
+    res == 2 && apply!(client_slot, X) # TODO: correction gate is now faster than light, add timeout!
+    tag!(clientswitch_slot, Tag(:PartOfGenSet, gen_set_idx, piecemaker_slot.idx, tagid))
     unlock(piecemaker_slot)
     unlock(clientswitch_slot)
     unlock(client_slot)
@@ -235,9 +258,9 @@ function prepare_sim(n::Int, T_link::Float64, cutoff::Float64, F_link::Float64, 
 
     sim = get_time_tracker(net)
 
-    # @process consume_listener(sim, net, 1)
-    # @process consume_listener(sim, net, 2)
-    # @process consume_listener(sim, net, 3)
+    @process consume_listener(sim, net, 1)
+    @process consume_listener(sim, net, 2)
+    @process consume_listener(sim, net, 3)
     @process switch_listener(sim, net)
     for i in 1:n
         # Entangler for generation of bell pairs
@@ -263,15 +286,14 @@ n = 7
 Δt_meas = 100e-9  # 100 ns
 Δt_cutoff_list = [Inf]
 
-T_coherence = 1.0
+T_coherence = Inf #1.0
 cutoff = Inf
-F_link = 0.97
+F_link = 1.0
 link_success_prob = 1.0
 attempt_time = 1e-6
-purify = true
+purify = false #true
 runtime = 0.01
 
 dataframes = DataFrame[]
 sim = prepare_sim(n, T_coherence, cutoff, F_link, link_success_prob, attempt_time, purify)
 t_wallclock = @elapsed run(sim, runtime)
-

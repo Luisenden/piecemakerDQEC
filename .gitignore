@@ -32,3 +32,7 @@ LocalPreferences.toml
 JuliaLocalPreferences.toml
 .vscode/
 .DS_Store
+
+# files to be deleted soon
+*.csv
+entangler_jeroen.jl
