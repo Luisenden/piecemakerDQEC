@@ -15,26 +15,42 @@ using DataFrames, StatsPlots, Statistics
 
 const ghzs = [ghz(n) for n in 1:4] # make const in order to not build new every time
 
-const steane_generators = [[1,2,3,5], [1,2,4,6], [2,3,4,7]]
+# const steane_generators = [[1,2,3,5], [1,2,4,6], [2,3,4,7]]
+# # think about having the clients paritioned into 4 tiles, such that each 
+# const CLIENT_TO_GENERATORS = Dict(
+#     1 => [1, 2],
+#     2 => [1, 2, 3],
+#     3 => [1, 3],
+#     4 => [2, 3],
+#     5 => [1],
+#     6 => [2],
+#     7 => [3]
+# )
+
+# const CLIENT_TO_CLIENTINCOMMON = Dict(
+#     1 => [2, 3, 4, 5, 6],
+#     2 => [1, 3, 4, 5, 6, 7],
+#     3 => [1, 2, 4, 5, 7],
+#     4 => [1, 2, 3, 6, 7],
+#     5 => [1, 2, 3],
+#     6 => [1, 2, 4],
+#     7 => [2, 3, 4]
+# )
+
+const steane_generators = [
+    [1, 2, 3, 5],
+    [1, 2, 4, 6],
+    [2, 3, 4, 7],
+]
 
 const CLIENT_TO_GENERATORS = Dict(
-    1 => [1, 2],
-    2 => [1, 2, 3],
-    3 => [1, 3],
-    4 => [2, 3],
-    5 => [1],
-    6 => [2],
-    7 => [3]
+    i => findall(g -> i in g, steane_generators)
+    for i in 1:7
 )
 
 const CLIENT_TO_CLIENTINCOMMON = Dict(
-    1 => [2, 3, 4, 5, 6],
-    2 => [1, 3, 4, 5, 6, 7],
-    3 => [1, 2, 4, 5, 7],
-    4 => [1, 2, 3, 6, 7],
-    5 => [1, 2, 3],
-    6 => [1, 2, 4],
-    7 => [2, 3, 4]
+    i => sort(setdiff(unique(vcat((collect(steane_generators[g]) for g in CLIENT_TO_GENERATORS[i])...)), [i]))
+    for i in 1:7
 )
 
 function noisy_bell_state(target_fidelity::Float64=0.97)
@@ -57,41 +73,35 @@ end
         pm_msgs = queryall(net[1], :isPiecemaker; filo = false)
         isempty(pm_msgs) && continue
         for pm_msg in pm_msgs
-            @info "consume_listener for generator set $(gen_set_index) got pm_msg: $(pm_msg)"
-            pm_slot, _, _ = pm_msg
-            msgs = queryall(net[1], :PartOfGenSet, gen_set_index, pm_slot.idx, ❓; filo = false) # TODO: here we want only one unique generator set, however, if it happens that one slot functions as a piecemaker twice we could get two gen sets --> ACTUALLY if it is the piecemaker then the second bell pair will never arrive! sanity check this in the outcomes!
+            msgs = queryall(net[1], :PartOfGenSet, gen_set_index, pm_msg.slot.idx, ❓; filo = false) # TODO: here we want only one unique generator set, however, if it happens that one slot functions as a piecemaker twice we could get two gen sets --> ACTUALLY if it is the piecemaker then the second bell pair will never arrive! sanity check this in the outcomes!
             isempty(msgs) && continue
             length(msgs) < 4 && continue
             if length(msgs) == 4 # if there are 4 slots tagged as part of the generator set, we can consume the state
                 @info "DONE 4: consume_listener for generator set $(gen_set_index) got msgs: $(msgs)"
                 # check that the four switch slots are exactly the correct generator
-                switchslots_idcs = sort([msg[1].idx for msg in msgs])
-                @assert switchslots_idcs == sort(steane_generators[gen_set_index]) "The generator set is not correct."
-                @assert allequal([msg[3][3] for msg in msgs]) "Not all slots tagged as part of the generator set have the same piecemaker slot idx!"
+                switchslots_idcs = sort([msg.slot.idx for msg in msgs])
+                @assert switchslots_idcs == steane_generators[gen_set_index] "The generator set is not correct."
+                @assert allunique(switchslots_idcs) "All switch slots tagged as part of the generator set need to be unique!"
+                @assert allequal([msg.tag[3] for msg in msgs]) "Not all slots tagged as part of the generator set have the same piecemaker slot idx!"
 
-                tagids = [msg[3][4] for msg in msgs]
-                @yield lock(pm_slot)
-                @info "Projecting out piecemaker qubit at slot $(pm_slot.idx) to consume GHZ state for generator set $(gen_set_index)"
-                res = project_traceout!(pm_slot, σˣ)
-                unlock(pm_slot)
-
+                tagids = [msg.tag[4] for msg in msgs]
                 # choose arbitrary client slot idx among the 4 tagged as part of the generator set to apply correction if needed   
-                clientslot_idcs_msgs = [client_msg for switchslotmsg in msgs for client_msg in queryall(net[1][switchslotmsg[1].idx], SwitchSlotInfo, ❓, ❓, ❓; filo=false) if client_msg.id in tagids]
-                clientslot_idcs = [client_msg[3][3] for client_msg in clientslot_idcs_msgs]
-                @info "SWICH SLOT INDICES: $([msg[1].idx for msg in msgs]), CLIENT SLOT INDICES: $clientslot_idcs"
+                clientslot_idcs_msgs = [client_msg for switchslotmsg in msgs for client_msg in queryall(net[1][switchslotmsg.slot.idx], SwitchSlotInfo, ❓, ❓, ❓; filo=false) if client_msg.id in tagids]
+                clientslot_idcs = [client_msg.tag[3] for client_msg in clientslot_idcs_msgs]
+                @info "SWICH SLOT INDICES: $([msg.slot.idx for msg in msgs]), CLIENT SLOT INDICES: $clientslot_idcs"
                 
 
                 # zip can truncate: If clientslot_idcs has length 3 or 5 because a SwitchSlotInfo tag is missing or duplicated, zip silently truncates. That could produce a smaller/wrong GHZ fidelity calculation without immediately failing.
                 @assert length(clientslot_idcs_msgs) == length(msgs)
                 @assert length(clientslot_idcs) == length(msgs)
-                clientslots_to_measure = [net[1+switchslot_idx][clientslot_idx] for (switchslot_idx, clientslot_idx) in zip([msg[1].idx for msg in msgs], clientslot_idcs)]
+                clientslots_to_measure = [net[1+switchslot_idx][clientslot_idx] for (switchslot_idx, clientslot_idx) in zip([msg.slot.idx for msg in msgs], clientslot_idcs)]
                 @info "Measuring client qubits at slots $(clientslot_idcs) to consume GHZ state for generator set $(gen_set_index)"
                 @yield reduce(&, lock.(clientslots_to_measure))
+                @yield lock(pm_msg.slot)
+                @info "Projecting out piecemaker qubit at slot $(pm_msg.slot.idx) to consume GHZ state for generator set $(gen_set_index)"
+                res = project_traceout!(pm_msg.slot, σˣ)
 
-                if res == 2
-                    apply!(first(clientslots_to_measure), Z)
-                end
-
+                res == 2 && apply!(first(clientslots_to_measure), Z)
                 @info "CLIENT SLOTS TO MEASURE: $(clientslots_to_measure)"
                 obs_proj = SProjector(StabilizerState(ghzs[length(clientslots_to_measure)]))
                 fidelity = real(observable(clientslots_to_measure, obs_proj))
@@ -104,11 +114,13 @@ end
                     untag!(net[1], msg.id)
                 end
                 for msg in clientslot_idcs_msgs
+                    @info "Deleting tag $(msg.tag) with id $(msg.id) at slot $(msg.slot)"
                     untag!(net[1], msg.id)
                 end
                 untag!(net[1], pm_msg.id)
 
                 unlock.(clientslots_to_measure)
+                unlock(pm_msg.slot)
                 @info "FIDELITY of consumed GHZ state for generator set $(gen_set_index): $(fidelity)"
                 # we can do some logging here if we want to track consumption times etc.
             else
@@ -150,17 +162,17 @@ end
     # if the answer is 'nothing' it gets tagged with tag isPiecemaker
     # and it gets sorted into a (random if multiple are possible) generator set with the according tag PartOfGenSet
     # if the answer is (an)other slot(s) it tries to sort it into the generator set with the (oldest) piecemaker slot, where it gets fused
-    # if the latter is not possible (i.e., this is the case where all potential piecemaker slots are already in an unsuitable generator set), 
-    # it gets tagged with tag isPiecemaker and gets sorted into the first suitable generator set with the according tag PartOfGenSet
+    # if the latter is not possible (i.e., this is the case when all potential piecemaker slots are already in an unsuitable generator set), 
+    # it gets tagged with tag isPiecemaker and gets sorted into the an arbitrary suitable generator set with the according tag PartOfGenSet
 
-    # TODO: we need to make sure that when this protocol is launched on the second bell pair of the slot, that is does not fuse with a state where the slot is already represented in;
+    # TODO: we need to make sure that when this protocol is launched on the second bell pair of the slot, that it does not fuse with a state where the slot is already represented in;
 
     # if this protocol is launched on the second bell pair of the slot, it is already part of a generator set, so we need to make sure it is not fused with a state where it already is represented in.
     # we check if it is already part of a state in progress
     gen_set_idx = nothing
     part_of_gen_set_msg = query(net[1][switchslot_idx], :PartOfGenSet, ❓, ❓, ❓; assigned = true, filo = false)
     if !isnothing(part_of_gen_set_msg)
-        gen_set_idx = part_of_gen_set_msg[3][2]
+        gen_set_idx = part_of_gen_set_msg.tag[2]
     end
 
     # we query for all potential piecemaker slots among all potentially common clients that have a gen set in common, but are not part of the generator set that the current slot is already part of
@@ -183,27 +195,25 @@ end
         @info "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
         unlock(net[1][switchslot_idx])
     else
-        # in this case there is at least one piecemaker slot in the potentially common generator sets
+        # in this case there is at least one piecemaker slot in the potentially common generator sets, we want to assign to the oldest one and fuse with it
         min_time_of_creation = Inf
         pmslot_to_fuse_with = nothing
         gen_set_idx = nothing
-        for msg in pmslot_msgs[.!isnothing.(pmslot_msgs)]
-            pmslot, _, taglog = msg
-            msg_switchinfo = query(pmslot, SwitchSlotInfo, ❓, ❓ ,❓; assigned = true, filo = false)
-            msg_gensetinfo = query(pmslot, :PartOfGenSet, ❓, ❓, ❓; assigned = true, filo = false)
-            isnothing(msg_switchinfo) && error("Switch pmslot $(pmslot.idx) is assigned a tag isPiecemaker but does not have a tag SwitchSlotInfo!")
-            isnothing(msg_gensetinfo) && error("Switch pmslot $(pmslot.idx) is assigned a tag isPiecemaker but does not have a tag PartOfGenSet")
-            pmslot, _, taglog = msg_switchinfo
-            time_of_creation = taglog[4]
-            if (time_of_creation < min_time_of_creation) && msg_gensetinfo[3][2] ∈ CLIENT_TO_GENERATORS[switchslot_idx] 
+        for pmslot_msg in pmslot_msgs[.!isnothing.(pmslot_msgs)]
+            msg_switchinfo = query(pmslot_msg.slot, SwitchSlotInfo, ❓, ❓ ,❓; assigned = true, filo = false)
+            msg_gensetinfo = query(pmslot_msg.slot, :PartOfGenSet, ❓, ❓, ❓; assigned = true, filo = false)
+            @assert !isnothing(msg_switchinfo) "Switch pm slot $(pmslot_msg.slot.idx) is assigned a tag isPiecemaker but has no SwitchSlotInfo tag! $(msg_switchinfo)"
+            @assert !isnothing(msg_gensetinfo) "Switch pms lot $(pmslot_msg.slot.idx) is assigned a tag isPiecemaker but has no PartOfGenSet tag! $(msg_gensetinfo)"
+            time_of_creation = msg_switchinfo.tag[4]
+            if (time_of_creation < min_time_of_creation) && msg_gensetinfo.tag[2] ∈ CLIENT_TO_GENERATORS[switchslot_idx] 
                 min_time_of_creation = time_of_creation
-                pmslot_to_fuse_with = pmslot
-                gen_set_idx = msg_gensetinfo[3][2]
+                pmslot_to_fuse_with = pmslot_msg.slot
+                gen_set_idx = msg_gensetinfo.tag[2]
             end
         end
 
         if isnothing(pmslot_to_fuse_with) 
-            # in this case all potential piecemaker slots in common occupied within an unsuitable generator set, meaning that it needs to start a new generator set in which it is itself the piecemaker
+            # in this case all potential piecemaker slots in common are occupied within an unsuitable generator set, meaning that it needs to start a new generator set in which it is itself the piecemaker
             @info "in this case all potential piecemaker slots are in an unsuitable generator set, meaning that $(switchslot_idx) needs to start a new generator set in which it is itself the piecemaker"
             @yield lock(net[1][switchslot_idx])
             tag!(net[1][switchslot_idx], Tag(:isPiecemaker))
@@ -214,7 +224,7 @@ end
         else
             # in this case we found a piecemaker slot within a suitable generator set and fuse with it
             isnothing(gen_set_idx) && error("Cannot fuse as no generator set was associated!")
-            @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid)
+            @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid)
         end
     end
 end
