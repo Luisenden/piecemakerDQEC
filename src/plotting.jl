@@ -5,21 +5,41 @@ using Plots.PlotMeasures: mm
 using LaTeXStrings
 
 ## load jld2 files from output directory
-path = "./output_10++/"
+path = "./output_05172026/"
 files = readdir(path)
 dataframes = DataFrame[]
 for file in files
-    if endswith(file, "jld2")
+    if startswith(file, "GHZservice_purification_singleslot")
         filename = path * file
         @load filename logs
+        logs[!, :purify] .= -1
+        max_timestep = maximum(logs.timesteps)
+        max_timestep < 7.5 && @info filename, "max timestep: ", max_timestep
+        logs[!, :max_timestep] .= max_timestep
+        push!(dataframes, logs)
+    elseif startswith(file, "GHZservice_purification_twoslot")
+        filename = path * file
+        @load filename logs
+        max_timestep = maximum(logs.timesteps)
+        max_timestep < 7.5 && @info filename, "max timestep: ", max_timestep
+        logs[!, :max_timestep] .= max_timestep
         push!(dataframes, logs)
     end
 end
 df = vcat(dataframes...)
 
-show(describe(df), allrows=true, allcols=true)
+##
+target = :max_timestep
+
+cors = Dict(
+    col => cor(df[!, target], df[!, col])
+    for col in names(df)
+    if col != string(target) && eltype(df[!, col]) <: Number
+)
 ##
 df = df[df[!, :discarded] .== false, :]
+df = df[df.error_model .== "dephasing", :]
+df = df[df.F_link .> 0.6, :]
 df.infidel_log = 1 .- df.GHZfidel
 
 # mean/std for each (T_coherence, purify)
@@ -38,7 +58,7 @@ summ = combine(groupby(df, [:F_link, :purify, :T_coherence]),
 )
 summ[!, :se] = summ.σ ./ sqrt.(summ.nlogs)
 
-summ = summ[(summ.F_link .> 0.5) .& (summ.F_link .< 1.0), :]
+#summ = summ[(summ.F_link .> 0.5) .& (summ.F_link .< 1.0), :]
 # make subplot per T_coherence, with purified vs unpurified as different series
 Ts = sort(unique(summ.T_coherence))
 p = plot(
@@ -53,8 +73,8 @@ for (i, T) in enumerate(Ts)
     @info summ_T
     @df summ_T scatter!(
         p[i],
-        :F_link, :μ,
-        yerror = :se,
+        :F_link, :nlogs,#:μ,
+        # yerror = :se,
         group = :purify,
         # yerror = :se,
         # yscale = :log10,
@@ -64,7 +84,6 @@ for (i, T) in enumerate(Ts)
         legendtitle = "Purify",
         legend = i == length(Ts) ? :outerbottomright : false, 
         # ylims = (1e-2, 1e-0),
-        xlims = (0.8, 1.0),
         minorgrid = true
     )
 end
