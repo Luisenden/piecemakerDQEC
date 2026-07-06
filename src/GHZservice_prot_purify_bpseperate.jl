@@ -16,8 +16,11 @@ using DataFrames, StatsPlots, Statistics
 const ghzs = [ghz(n) for n in 1:10] # make const in order to not build new every time
 
 # Main simulation, measures everything in seconds (s)
-const steane_generators = [[1,2,3,5], [1,2,4,6], [2,3,4,7]]
-const toric_code_generators = [[1,2,4,5], [2,3,5,6], [1,3,4,6]]
+const steane_generators = [
+    [1, 2, 3, 5],
+    [1, 2, 4, 6],
+    [2, 3, 4, 7],
+]
 
 # Pre-compute client to generator mapping for O(1) lookup
 const CLIENT_TO_GENERATORS = Dict(
@@ -72,7 +75,7 @@ function noisy_bell_state(target_fidelity::Float64=0.97)
     return λ * perfect_pair_dm + (1 - λ) * mixed_dm
 end
 
-@resumable function projectout(sim, net, slot_idx, gen_set_idx, n_clients_in_set, state::SimulationState)
+@resumable function projectout(sim, net, slot_idx, gen_set_idx, state::SimulationState)
     # Snapshot clients and counters before clearing progress
     clients = copy(state.progress[gen_set_idx])
     num_purifications = state.purif_counts[gen_set_idx]
@@ -94,9 +97,8 @@ end
     @yield lock(net[1][slot_idx])
     @debug "Projecting out piecemaker qubit at slot $(slot_idx)"
     res = project_traceout!(net[1][slot_idx], σˣ)
-    @yield timeout(sim, Δt_meas)
-
-    tag!(net[1 + slot_idx][1], Tag(:updateZ, res, gen_set_idx, n_clients_in_set, meas_id))
+    res == 2 && apply!(net[1+slot_idx][1], Z)
+    #@yield timeout(sim, Δt_meas)
     unlock(net[1][slot_idx])
 end
 
@@ -105,8 +107,9 @@ end
     apply!((piecemaker_slot, client_slot), CNOT)
     @yield timeout(sim, Δt_CNOT)
     res = project_traceout!(client_slot, Z)
-    @yield timeout(sim, Δt_meas)
-    tag!(net[1 + client_slot.idx][1], Tag(:updateX, res))
+    #@yield timeout(sim, Δt_meas)
+
+    res == 2 && apply!(net[1+client_slot.idx][1], X) # TODO: correction gate is now faster than light, add timeout!
     unlock(piecemaker_slot)
     unlock(client_slot)
     @debug "Fused client $(client_slot.idx) with first client $(piecemaker_slot.idx)"
@@ -152,14 +155,14 @@ end
     if candidate ∉ s
         push!(s, candidate)
         if length(s) > 1
-            @process fusion(sim, net, net[1][s[1]], net[1][candidate])
+            @yield @process fusion(sim, net, net[1][s[1]], net[1][candidate])
+            @yield @process entangler_for_purification(sim, net, candidate, attempt_time, link_success_prob)
             @debug "fusing candidate $(candidate) into generator set index $(idx_generator_take) with current starting index $(s[1])"
         end
         if length(s) == target_len
             # Wait for all X corrections corresponding to fused non-pivot clients
             # The first client in the snapshot is the pivot / piecemaker.
             @debug "Generator set index $(idx_generator_take) with clients $(s) is ready for measurement, waiting for Xdone tags from clients before projecting out"
-            @yield @process wait_for_xdone_clients(sim, net, s[2:end])
 
             # Delete remaining counterpart tags for the clients being measured, as this indicates the end of the states lifetime
             for i in s
@@ -171,7 +174,9 @@ end
                 end
             end
             @debug "Progress: $(state). Generator set $(idx_generator_take) completed with clients $(s), projecting out piecemaker qubit"
-            @process projectout(sim, net, s[1], idx_generator_take, length(s), state)
+            @yield @process projectout(sim, net, s[1], idx_generator_take, state)
+
+            tag!(net[1][1], Tag(:Zdone, idx_generator_take, length(s), state.next_measure_id))
         end
     else
         error("Candidate $(candidate) already in progress for generator set index $(idx_generator_take), current clients in set: $(s)")
@@ -182,7 +187,7 @@ end
 @resumable function PurifyProt(sim, net, candidate::Int, state::SimulationState)
     gen_idx = findfirst(i -> candidate ∈ state.progress[i], 1:length(state.progress))
 
-    if isnothing(gen_idx) # this can happen if the purification request arrives after the generator set has been completed and projected out, in which case we just count it as an orphan purification pair
+    if isnothing(gen_idx) || !isassigned(net[1 + candidate][1]) # this can happen if the purification request arrives after the generator set has been completed and projected out, in which case we just count it as an orphan purification pair
         @yield lock(net[1][candidate]) & lock(net[1 + candidate][2])
         project_traceout!(net[1][candidate], σˣ)
         project_traceout!(net[1 + candidate][2], σˣ)
@@ -216,10 +221,10 @@ end
 
     if res1 == 2 && res1 == res2 # we only accept states that correspond to the (+,+) eigenspaces of the ZZ stabilizers
         state.purif_counts[gen_idx] += 1
-        @debug "Purification successful for candidate $(candidate); count now $(state.purif_counts[gen_idx])"
+        @info "Purification successful for candidate $(candidate); count now $(state.purif_counts[gen_idx])"
     else
-        @debug "Purification failed for candidate $(candidate), projecting out with clients $(s)"
-        @yield @process projectout(sim, net, state.progress[gen_idx][1], gen_idx, length(state.progress[gen_idx]), state)
+        @info "Purification failed for candidate $(candidate), projecting out with clients $(s)"
+        @yield @process projectout(sim, net, state.progress[gen_idx][1], gen_idx, state)
     end
 end
 
@@ -240,30 +245,17 @@ end
                     (timestamp, idx_generator_take) = get_oldest_generator_for_candidate(sim, net, candidate, state)
                     while now(sim) - timestamp > cutoff
                         @debug "Generator set $(idx_generator_take) with clients $(state.progress[idx_generator_take]) TOO OLD (timestamp: $(timestamp), now: $(now(sim)), cutoff: $(cutoff))"
-                        @yield @process projectout(sim, net, state.progress[idx_generator_take][1], idx_generator_take, length(state.progress[idx_generator_take]), state)
+                        @yield @process projectout(sim, net, state.progress[idx_generator_take][1], idx_generator_take, state)
                         (timestamp, idx_generator_take) = get_oldest_generator_for_candidate(sim, net, candidate, state)
                     end
-                    @process GeneratorServiceProt(sim, net, candidate, state, steane_generators, idx_generator_take)
+                    @yield @process GeneratorServiceProt(sim, net, candidate, state, steane_generators, idx_generator_take)
                 elseif taglog[3] == 2 # from tag "Entangled to client X.2"
-                    @debug "Received purification request for candidate $(candidate)"
+                    @info "Received purification request for candidate $(candidate)"
                     @yield @process PurifyProt(sim, net, candidate, state)
                 end
             else
                 break
             end
-        end
-    end
-end
-
-@resumable function wait_for_xdone_clients(sim, net, clients::Vector{Int})
-    for client in clients
-        while true
-            is_xdone = querydelete!(net[1 + client][1], :Xdone, ❓; filo = false)
-            if !isnothing(is_xdone)
-                @debug "Received Xdone tag from client $(client)"
-                break
-            end
-            @yield onchange_tag(net[1 + client][1])
         end
     end
 end
@@ -292,7 +284,7 @@ end
             discarded = (length(genset) != n_clients_in_set)
             @debug "Logging measurement $(pending) for generator set index $(gen_set_idx) with clients $(clients_to_measure)"
 
-            obs_proj = SProjector(StabilizerState(ghzs[length(clients_to_measure)]))
+            obs_proj = SProjector(StabilizerState(ghzs[4]))
             @yield reduce(&, [lock(net[1 + i][1]) for i in clients_to_measure])
             fidelity = real(observable([net[1 + i][1] for i in clients_to_measure], obs_proj))
 
@@ -324,82 +316,22 @@ end
     end
 end
 
-@resumable function correct_and_inform(sim, net::RegisterNet, client::Int)
-    while true
-        @yield onchange_tag(net[1 + client][1])
-        msg1 = querydelete!(net[1 + client][1], :updateX, ❓; filo = false)
-        msg2 = querydelete!(net[1 + client][1], :updateZ, ❓, ❓, ❓, ❓; filo = false)
-
-        if !isnothing(msg1) || !isnothing(msg2)
-            if !isnothing(msg1)
-                value = msg1[3][2]
-                @debug "X received at client $(client), with value $(value)"
-
-                if value == 2
-                    @yield lock(net[1 + client][1])
-                    apply!(net[1 + client][1], X, time = now(sim))
-                    unlock(net[1 + client][1])
-                    @yield timeout(sim, Δt_XZ)
-                end
-                tag!(net[1+client][1], Tag(:Xdone, client))
-                @debug "At client $(client), tagged Xdone!"
-            end
-
-            if !isnothing(msg2)
-                @debug "Z received at client $(client)"
-                value = msg2[3][2]
-                gen_set_idx = msg2[3][3]
-                n_clients_in_set = msg2[3][4]
-                meas_id = msg2[3][5]
-
-                @debug "Z received at client $(client), with value $(value), gen_set_idx=$(gen_set_idx), n_clients_in_set=$(n_clients_in_set)"
-
-                if value == 2
-                    @yield lock(net[1 + client][1])
-                    apply!(net[1 + client][1], Z, time = now(sim))
-                    unlock(net[1 + client][1])
-                    @yield timeout(sim, Δt_XZ)
-                end
-                tag!(net[1][1], Tag(:Zdone, gen_set_idx, n_clients_in_set, meas_id))
-                @debug "At client $(client), tagged Zdone!"
-            end
-        end
-    end
-end
-
 @resumable function entangler_for_purification(sim, net, client, attempt_t, link_success_prob)
     entangler = EntanglerProt(
         sim=sim, net=net, nodeA=1, chooseA=client,
         nodeB=1 + client, chooseB=2,
         randomize=false,
-        success_prob = min(1.0, 2*link_success_prob), rounds = 1, attempts = -1, attempt_time = attempt_t,
+        success_prob = link_success_prob, rounds = 1, attempts = -1, attempt_time = attempt_t,
         retry_lock_time = attempt_t/2, local_busy_time_post = 0.0
     )
-
-    fused_flag = false
-    while true
-        counterpart = query(net[1 + client][1], EntanglementCounterpart, ❓, ❓)
-        fused_state = query(net[1 + client][1], :updateX, ❓)
-
-        if !isnothing(fused_state) # we need this flag as :updateX exists only temporally during fusion (deleted with correction)
-            fused_flag = true # note that if this is set true for the first time isnothing(counterpart) is always false
-        end
-
-        if isnothing(counterpart)
-            fused_flag = false # with the start of a new GHZ generation round, we need to reset the fused flag as well
-            @yield onchange_tag(net[1 + client][1])
-        elseif fused_flag # this client is in a fused state, so we attempt bell pair generation for purification
-            @yield @process entangler()
-        else # if neither of the above, this means we are in a new round but not fused yet, so we wait for fusion to happen
-            @yield onchange_tag(net[1 + client][1])
-        end
-    end
+    @yield @process entangler()
 end
 
 function prepare_sim(n::Int, T_link::Float64, cutoff::Float64, F_link::Float64, link_success_prob::Float64, steane_generators, attempt_t, purify::Bool)
     states_representation = QuantumOpticsRepr()
     @debug "Preparing simulation with parameters: n=$(n), T_link=$(T_link), cutoff=$(cutoff), F_link=$(F_link), link_success_prob=$(link_success_prob), attempt_time=$(attempt_t), purify=$(purify)"
     noise_model = Depolarization(T_link)
+
 
     # Initialize simulation state
     state = SimulationState(
@@ -442,10 +374,6 @@ function prepare_sim(n::Int, T_link::Float64, cutoff::Float64, F_link::Float64, 
         )
 
         @process entangler()
-        if purify
-            @process entangler_for_purification(sim, net, i, attempt_t, link_success_prob)
-        end
-        @process correct_and_inform(sim, net, i)
     end
     @process listen_fuse(sim, net, state, steane_generators, cutoff)
     @process listen_log(sim, net, state, steane_generators)
@@ -457,18 +385,62 @@ end
 n = 7
 
 Δt_CNOT = 100e-6  # 100 µs
-Δt_XZ = 10e-6     # 10 µs
-Δt_meas = 100e-9  # 100 ns
-Δt_cutoff_list = [Inf]
+
+attempt_time = 1.0e-6 # 1 µs
+link_success_prob = 0.0001
+cutoff = Inf
+
+runtime = 1.0
+purify = true
 
 dataframes = DataFrame[]
+
+for F_link in [1.0-2.5^(-x) for x in  2:6][1]
+    for T_coherence in [0.1, 0.01][1]
+        sim, state = prepare_sim(n, T_coherence, cutoff, F_link, link_success_prob, steane_generators, attempt_time, purify)
+        t_wallclock = @elapsed run(sim, runtime)
+
+        log = DataFrame(
+            state.logs,
+            [
+                :timesteps,
+                :clients_serviced,
+                :GHZfidel,
+                :discarded,
+                :num_purifications,
+                :orphan_purif_pairs
+            ]
+        )
+
+        log[!, "attempt_time"] .= attempt_time
+        log[!, "link_success_prob"] .= link_success_prob
+        log[!, "cutoff"] .= cutoff
+        log[!, "runtime"] .= runtime
+        log[!, "purify"] .= purify
+        log[!, "wallclock_time"] .= t_wallclock
+        log[!, "T_coherence"] .= T_coherence
+        log[!, "F_link"] .= F_link
+
+        push!(dataframes, log)
+        @info "completed simulation for F_link=$(F_link), T_coherence=$(T_coherence)"
+    end
+end
+logsv21true = vcat(dataframes...)
+##
+@save "GHZservice_purification_compare_logs_true_$(attempt_time)_$(link_success_prob)_$(cutoff)_runtime$(runtime).jld2" logsv21true
+##
+
+Δt_XZ = 10e-6     # 10 µs
+Δt_meas = 100e-9  # 100 ns
+dataframes = DataFrame[]
 for purify in [false]
-    for attempt_time in [1e-6]
-        for link_success_prob in [0.0001]
-            for T_coherence in [Inf]
-                for F_link in [0.84]#[1.0- 2.5^(-x) for x in 1.0:6.0]
-                    for cutoff in Δt_cutoff_list
-                        runtime = 10.0# * -log10(0.1*link_success_prob^2)
+    for attempt_time in [10^(-x) for x in 5.0:8.0] # 10ns to 10μs
+        for link_success_prob in [10^(-x) for x in 1.0:5.0] # 0.1 to 0.00001
+            for T_coherence in [1/10^x for x in -1.0:3.0] # 0.1s to 0.00001s
+                for F_link in [1.0-0.01^(x) for x in 1.0:6.0] #[1.0- 2.5^(-x) for x in 1.0:6.0]
+                    runtime = attempt_time/link_success_prob * 1000
+                    for cutoff in [Inf] # cutoff at 10%, 20% and 50% of expected runtime
+
                         sim, state = prepare_sim(n, T_coherence, cutoff, F_link, link_success_prob, steane_generators, attempt_time, purify)
                         t_wallclock = @elapsed run(sim, runtime)
 
@@ -486,17 +458,17 @@ for purify in [false]
                         logs = transform(logs, :timesteps => (x -> [0.0; diff(x)]) => :time_diff)
                         logs = transform(logs, :clients_serviced => (x -> [length(c) for c in x]) => :num_clients)
 
-                        logs[!, "link_success_prob"] .= link_success_prob
                         logs[!, "attempt_time"] .= attempt_time
-                        logs[!, "runtime"] .= runtime
-                        logs[!, "tCNOT"] .= Δt_CNOT
+                        logs[!, "link_success_prob"] .= link_success_prob
                         logs[!, "T_coherence"] .= T_coherence
                         logs[!, "F_link"] .= F_link
+                        logs[!, "runtime"] .= runtime
+                        logs[!, "tCNOT"] .= Δt_CNOT
                         logs[!, "cutoff"] .= cutoff
                         logs[!, "wallclock_time"] .= t_wallclock
                         logs[!, "purify"] .= purify
                         
-                        @save "GHZservice_purification_trial_logs_$(purify)_$(link_success_prob)_$(T_coherence)_$(F_link)_runtime_$(runtime).jld2" logs
+                        @save "GHZservice_purification_trial_logs_purify$(purify)_attempttime$(attempt_time)_linksuccessprob$(link_success_prob)_Tcoherence$(T_coherence)_Flink$(F_link)_runtime$(runtime).jld2" logs
                         push!(dataframes, logs)
                         @info "completed simulation for link_success_prob=$(link_success_prob), T_CNOT=$(Δt_CNOT), T_coherence=$(T_coherence), F_link=$(F_link), cutoff=$(cutoff), wallclock=$(t_wallclock)s, collected $(nrow(logs)) logs"
                     end

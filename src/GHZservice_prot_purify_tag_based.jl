@@ -239,13 +239,14 @@ end
         pm_slot_idx = part_of_gen_set_msg.tag[3]
     end
 
-    !isnothing(gen_set_idx) && @assert isnothing(query(net[1][switchslot_idx], :isPiecemaker, ❓; assigned = true, filo = false)) "A slot already in a generator set must not be a piecemaker; otherwise the second Bell pair should not exist and this protocol should not run."
+    !isnothing(gen_set_idx) && @assert isnothing(query(net[1][switchslot_idx], :isPiecemaker, ❓; assigned = true, filo = false)) "A slot that is part of a GHZ cannot be a piecemaker in this case; otherwise the second Bell pair should not exist and this protocol should not run."
+
     if (!isnothing(gen_set_idx) && # this makes sure that purification is only attempted if the associated slot is already part of a fused state
         isnothing(query(net[1][part_of_gen_set_msg.tag[3]], :isComplete, ❓; filo = false)) && # and that the fused state is not complete yet (i.e., it is currently used by the consume_listener)
         isnothing(query(net[1][part_of_gen_set_msg.tag[3]], :purifFail, ❓; filo = false)) && # and that it has not failed yet (i.e., it is currently used by the purify_fail_listener)
         rand() < purify) # and that the purification is attempted with the given probability
 
-        @debug "This bell pair in slot $(switchslot_idx) in client slot $(clientslot_idx) is used for purification"
+        @info "This bell pair in slot $(switchslot_idx) in client slot $(clientslot_idx) is used for purification"
         # first we need to retrieve the piecemaker slot of the generator set the client is already part of
         pm_slot_idx = part_of_gen_set_msg.tag[3]
         @yield lock(net[1][switchslot_idx]) & lock(net[1][pm_slot_idx]) & lock(net[1 + switchslot_idx][3-clientslot_idx]) & lock(net[1+switchslot_idx][clientslot_idx]) 
@@ -255,7 +256,7 @@ end
         unlock(net[1 + switchslot_idx][clientslot_idx])
         unlock(net[1][switchslot_idx])
         unlock(net[1][pm_slot_idx])
-        if res1 == res2 # res1 == 2 && we only accept states that correspond to the (+,+) eigenspaces of the ZZ stabilizers
+        if res1 == 2 && res1 == res2 # we only accept states that correspond to the (+,+) eigenspaces of the ZZ stabilizers
             @debug "Purification successful for slot $(clientslot_idx)"
             tag!(net[1][pm_slot_idx], Tag(:puriSucc))
             untag!(net[1][switchslot_idx], tagid)
@@ -300,7 +301,7 @@ end
         unlock(net[1 + switchslot_idx][clientslot_idx])
         unlock(net[1][switchslot_idx])
         unlock(net[1][pm_slot_idx])
-        if res1 == res2 # res1 == 2 && we only accept states that correspond to the (+,+) eigenspaces of the ZZ stabilizers
+        if res1 == 2 && res1 == res2 #  we only accept states that correspond to the (+,+) eigenspaces of the ZZ stabilizers
             @debug "Purification successful for slot $(clientslot_idx)"
             tag!(net[1][pm_slot_idx], Tag(:puriSucc))
             untag!(net[1][switchslot_idx], tagid)
