@@ -35,4 +35,4 @@ JuliaLocalPreferences.toml
 
 # files to be deleted soon
 *.csv
-entangler_jeroen.jl
+load_*.jl

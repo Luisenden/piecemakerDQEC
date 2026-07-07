@@ -557,4 +557,4 @@ function run_sweep()
 end
 df = run_sweep()
 
-@save "$(output_path)/ghz_service_v1_$(error_model)_$(global_idx).jld2" df
+@save "$(output_path)/ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df
