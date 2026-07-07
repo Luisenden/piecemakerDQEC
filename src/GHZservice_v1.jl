@@ -18,6 +18,7 @@ code = length(ARGS) >= 1 ? ARGS[1] : "Steane7"
 error_model = length(ARGS) >= 2 ? ARGS[2] : "depolarizing"
 target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 5
 global_idx = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 1
+output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
 
 const codes = Dict(
     "Steane7" => (7, [
@@ -93,7 +94,7 @@ end
     
     # check that the four switch slots are exactly the correct generator
     switchslots_idcs = sort([msg.slot.idx for msg in msgs])
-    @info "Generator set indices for generator set $(gen_set_index): $(switchslots_idcs)"
+    @debug "Generator set indices for generator set $(gen_set_index): $(switchslots_idcs)"
 
     
     !iscutoff && @assert switchslots_idcs == codes[code][2][gen_set_index] "The generator set is not correct."
@@ -104,18 +105,18 @@ end
     # choose arbitrary client slot idx among the 4 tagged as part of the generator set to apply correction if needed   
     clientslot_idcs_msgs = [client_msg for switchslotmsg in msgs for client_msg in queryall(net[1][switchslotmsg.slot.idx], SwitchSlotInfo, ❓, ❓, ❓; filo=false) if client_msg.id in tagids]
     clientslot_idcs = [client_msg.tag[3] for client_msg in clientslot_idcs_msgs]
-    @info "SWICH SLOT INDICES: $([msg.slot.idx for msg in msgs]), CLIENT SLOT INDICES: $clientslot_idcs"
+    @debug "SWICH SLOT INDICES: $([msg.slot.idx for msg in msgs]), CLIENT SLOT INDICES: $clientslot_idcs"
     
 
     # zip can truncate: If clientslot_idcs has length 3 or 5 because a SwitchSlotInfo tag is missing or duplicated, zip silently truncates. That could produce a smaller/wrong GHZ fidelity calculation without immediately failing.
     @assert length(clientslot_idcs_msgs) == length(msgs)
     @assert length(clientslot_idcs) == length(msgs)
     clientslots_to_measure = [net[1+switchslot_idx][clientslot_idx] for (switchslot_idx, clientslot_idx) in zip([msg.slot.idx for msg in msgs], clientslot_idcs)]
-    @info "Measuring client qubits at slots $(clientslot_idcs) to consume GHZ state for generator set $(gen_set_index)"
+    @debug "Measuring client qubits at slots $(clientslot_idcs) to consume GHZ state for generator set $(gen_set_index)"
 
     @yield reduce(&, lock.(clientslots_to_measure))
     @yield lock(pm_slot)
-    @info "Projecting out piecemaker qubit at slot $(pm_slot.idx) to consume GHZ state for generator set $(gen_set_index)"
+    @debug "Projecting out piecemaker qubit at slot $(pm_slot.idx) to consume GHZ state for generator set $(gen_set_index)"
     res = project_traceout!(pm_slot, σˣ)
     res == 2 && apply!(first(clientslots_to_measure), Z)
     !iscutoff && @yield timeout(sim, Δt_meas)
@@ -133,7 +134,7 @@ end
         untag!(net[1], msg.id)
     end
     for msg in clientslot_idcs_msgs
-        @info "Deleting tag $(msg.tag) with id $(msg.id) at slot $(msg.slot)"
+        @debug "Deleting tag $(msg.tag) with id $(msg.id) at slot $(msg.slot)"
         untag!(net[1], msg.id)
         unlock(net[1 + msg.slot.idx][msg.tag[3]])
     end
@@ -174,7 +175,7 @@ end
         switch_slot = msg.slot
         client_slot = net[1 + msg.slot.idx][msg.tag[3]]
 
-        @info "Discarding Bell pair at switch slot $(switch_slot) and client slot $(client_slot): $(reason)"
+        @debug "Discarding Bell pair at switch slot $(switch_slot) and client slot $(client_slot): $(reason)"
 
         @yield lock(switch_slot) & lock(client_slot)
 
@@ -190,7 +191,7 @@ end
 @resumable function switch_worker(
     sim,
     net,
-    pending_batches::Vector{Vector{Any}},
+    pending_batches::Vector{Vector{Any}}, # batches of messages from bell pairs that arrived at the same time
     worker_running::Ref{Bool},
     attempt_counter::Ref{Int},
     gate_fidelity::Float64,
@@ -308,9 +309,9 @@ end
     for otherswitchslot_idx in CLIENT_TO_CLIENTINCOMMON[switchslot_idx]
         pmslot_msg = query(net[1][otherswitchslot_idx], :isPiecemaker, ❓; assigned = true, filo = false)
         if !isnothing(pmslot_msg)
-            @info "Found potential piecemaker slot at switch slot idx $(otherswitchslot_idx) with info $(pmslot_msg)"
+            @debug "Found potential piecemaker slot at switch slot idx $(otherswitchslot_idx) with info $(pmslot_msg)"
             gensetinfo_msg = query(pmslot_msg.slot, :PartOfGenSet, ❓, pmslot_msg.slot.idx, ❓; assigned = true, filo = false)
-            @info "checking if current switch slot idx $(switchslot_idx) and potential piecemaker slot idx $(otherswitchslot_idx) are part of the same generator $(CLIENT_TO_GENERATORS[gensetinfo_msg.tag[2]])"
+            @debug "checking if current switch slot idx $(switchslot_idx) and potential piecemaker slot idx $(otherswitchslot_idx) are part of the same generator $(CLIENT_TO_GENERATORS[gensetinfo_msg.tag[2]])"
             (switchslot_idx ∈ codes[code][2][gensetinfo_msg.tag[2]]) && push!(pmslot_msgs, pmslot_msg) # only consider it as potential piecemaker slot if the current switch slot is part of the same generator set as the piecemaker slot
         end
     end
@@ -322,7 +323,7 @@ end
         tag!(net[1][switchslot_idx], Tag(:isPiecemaker, attempt_id))
         gen_set_idx = rand(CLIENT_TO_GENERATORS[switchslot_idx])
         tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
-        @info "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
+        @debug "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
         unlock(net[1][switchslot_idx])
         
     else
@@ -344,13 +345,13 @@ end
 
         if isnothing(pmslot_to_fuse_with) 
             # in this case all potential piecemaker slots in common used in a GHZ state for an unsuited, meaning that it needs to start a new generator set in which it is itself the piecemaker
-            @info "in this case all potential piecemaker slots are in an unsuitable generator set, meaning that $(switchslot_idx) needs to start a new generator set in which it is itself the piecemaker"
+            @debug "in this case all potential piecemaker slots are in an unsuitable generator set, meaning that $(switchslot_idx) needs to start a new generator set in which it is itself the piecemaker"
             @yield lock(net[1][switchslot_idx])
             attempt_id = next_attempt_id!(attempt_counter)
             tag!(net[1][switchslot_idx], Tag(:isPiecemaker, attempt_id))
             gen_set_idx = rand(CLIENT_TO_GENERATORS[switchslot_idx])
             tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
-            @info "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
+            @debug "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
             unlock(net[1][switchslot_idx])
         else
             # in this case we found a piecemaker slot within a suitable generator set and fuse with it
@@ -380,11 +381,11 @@ end
     unlock(piecemaker_slot)
     unlock(clientswitch_slot)
     unlock(client_slot)
-    @info "Fused client $(clientswitch_slot.idx) with first client $(piecemaker_slot.idx)"
+    @debug "Fused client $(clientswitch_slot.idx) with first client $(piecemaker_slot.idx)"
 end
 
 
-@resumable function naive_entangler(sim,net, F_link, link_success_prob, attempt_t)
+@resumable function naive_entangler(sim, net, n, F_link, link_success_prob, attempt_t)
     for i in 1:n
         # Entangler for generation of bell pairs
         entangler = EntanglerProt(
@@ -406,7 +407,7 @@ function prepare_sim(n, T_link::Float64, F_link::Float64, link_success_prob::Flo
 
 
     states_representation = QuantumOpticsRepr()
-    @info "Preparing simulation with parameters: n=$(n), T_link=$(T_link), cutoff=$(cutoff), F_link=$(F_link), link_success_prob=$(link_success_prob), attempt_time=$(attempt_t)"
+    @debug "Preparing simulation with parameters: n=$(n), T_link=$(T_link), cutoff=$(cutoff), F_link=$(F_link), link_success_prob=$(link_success_prob), attempt_time=$(attempt_t)"
     
     noise_model = error_model == "dephasing" ? T2Dephasing(T_link) : Depolarization(T_link)
 
@@ -433,13 +434,11 @@ function prepare_sim(n, T_link::Float64, F_link::Float64, link_success_prob::Flo
     global_pause = Ref(0.0)
 
     @process switch_listener(sim, net, attempt_counter, gate_fidelity, Δt_meas, cutoff, Δt_rotation_shuttle, global_pause, log_data)
-    @process naive_entangler(sim, net, F_link, link_success_prob, attempt_t)
+    @process naive_entangler(sim, net, n, F_link, link_success_prob, attempt_t)
     return sim
 end
 
-##
-
-n = codes[code][1] # number of clients
+## run the simulation
 Δt_CNOT = 100e-6  # 100 µs
 Δt_rotation_shuttle = 100e-6  # 100 µs
 
@@ -485,7 +484,7 @@ function run_sweep()
     gate_fidelity = parameter_combinations[global_idx][5]
     Δt_meas = parameter_combinations[global_idx][6]
 
-    @info "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_meas=$(Δt_meas)"
+    @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_meas=$(Δt_meas)"
 
     log_data = LogRow[]
     dataframes = DataFrame[]
@@ -516,7 +515,7 @@ function run_sweep()
             Δt_rotation_shuttle,
             log_data
         )
-        @info "Starting simulation with runtime $(runtime) seconds"
+        @debug "Starting simulation with runtime $(runtime) seconds"
 
         t_wallclock = @elapsed run(sim, runtime)
 
@@ -533,7 +532,7 @@ function run_sweep()
         logs = transform(logs, :timesteps => (x -> [0.0; diff(x)]) => :time_diff)
         logs = transform(logs, :clients_serviced => (x -> length.(x)) => :num_clients)
         
-        logs[!, :n] .= n
+        logs[!, :n] .= codes[code][1]
         logs[!, :link_success_prob] .= link_success_prob
         logs[!, :attempt_time] .= attempt_time
         logs[!, :T_coherence] .= T_coherence
@@ -551,11 +550,11 @@ function run_sweep()
 
         push!(dataframes, logs)
 
-        @info link_success_prob attempt_time T_coherence F_link error_model cutoff runtime t_wallclock nlogs=size(logs, 1)
+        @debug link_success_prob attempt_time T_coherence F_link error_model cutoff runtime t_wallclock nlogs=size(logs, 1)
     end
     df = vcat(dataframes...)
     return df
 end
 df = run_sweep()
-@info df
-@save "ghz_service_v1_$(error_model)_$(global_idx).jld2" df
+
+@save "$(output_path)/ghz_service_v1_$(error_model)_$(global_idx).jld2" df
