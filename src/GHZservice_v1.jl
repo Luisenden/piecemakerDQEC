@@ -12,11 +12,10 @@ using DataFrames
 using Random
 
 seed = 1234
-Random.seed!(seed)
 
 code = length(ARGS) >= 1 ? ARGS[1] : "Steane7"
 error_model = length(ARGS) >= 2 ? ARGS[2] : "depolarizing"
-target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 5
+target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 3000
 global_idx = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 1
 output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
 
@@ -83,7 +82,7 @@ function next_attempt_id!(counter)
     return counter[]
 end
 
-@resumable function consumer(sim, net, pm_slot::RegRef, gen_set_index::Int, iscutoff::Bool, log_data::Vector{LogRow}, Δt_meas::Float64)
+@resumable function consumer(sim, net, pm_slot::RegRef, gen_set_index::Int, iscutoff::Bool, log_data::Vector{LogRow}, Δt_readout::Float64, readout_fidelity::Float64)
 
     msgs = queryall(net[1], :PartOfGenSet, gen_set_index, pm_slot.idx, ❓; filo = false)
     
@@ -118,8 +117,11 @@ end
     @yield lock(pm_slot)
     @debug "Projecting out piecemaker qubit at slot $(pm_slot.idx) to consume GHZ state for generator set $(gen_set_index)"
     res = project_traceout!(pm_slot, σˣ)
+    if rand() > readout_fidelity
+        res = 3 - res
+    end
     res == 2 && apply!(first(clientslots_to_measure), Z)
-    !iscutoff && @yield timeout(sim, Δt_meas)
+    !iscutoff && @yield timeout(sim, Δt_readout)
     obs_proj = SProjector(StabilizerState(ghzs[length(clientslots_to_measure)]))
     fidelity = real(observable(clientslots_to_measure, obs_proj))
     time_of_consumption = now(sim)
@@ -170,20 +172,20 @@ function drain_entanglement_msgs!(net)
 end
 
 
-@resumable function discard_bell_msgs(sim, net, msgs, reason::String)
+@resumable function discard_bell_msgs(sim, net, msgs, pause_until)
+    
+    @yield timeout(sim, max(0.0, pause_until - now(sim))) # we wait until global pause is over and delete (that prevents the switch from being flooded with messages as the slots are blocked)
     for msg in msgs
         switch_slot = msg.slot
         client_slot = net[1 + msg.slot.idx][msg.tag[3]]
-
-        @debug "Discarding Bell pair at switch slot $(switch_slot) and client slot $(client_slot): $(reason)"
-
         @yield lock(switch_slot) & lock(client_slot)
 
         project_traceout!(switch_slot, σˣ)
         project_traceout!(client_slot, σˣ)
-
+        id = tag!(switch_slot, Tag(:discarded))
         unlock(switch_slot)
         unlock(client_slot)
+        untag!(net[1], id)
     end
 end
 
@@ -194,8 +196,10 @@ end
     pending_batches::Vector{Vector{Any}}, # batches of messages from bell pairs that arrived at the same time
     worker_running::Ref{Bool},
     attempt_counter::Ref{Int},
+    Δt_CNOTgate::Float64,
     gate_fidelity::Float64,
-    Δt_meas::Float64,
+    Δt_readout::Float64,
+    readout_fidelity::Float64,
     cutoff::Float64,
     Δt_rotation_shuttle::Float64,
     global_pause::Ref{Float64},
@@ -214,8 +218,8 @@ end
             clientslot_idx = msg.tag[3]
             # tag with switch slot info
             tagid = tag!(msg.slot, Tag(SwitchSlotInfo, msg.slot.idx, clientslot_idx, now(sim)))
-            @yield @process SwitchSlotProt(sim, net, msg.slot.idx, clientslot_idx, Int(tagid), attempt_counter, gate_fidelity, Δt_meas, log_data)
-            @yield @process CutoffDiscardProt(sim, net, cutoff, log_data, Δt_meas)
+            @yield @process SwitchSlotProt(sim, net, msg.slot.idx, clientslot_idx, Int(tagid), attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, log_data)
+            @yield @process CutoffDiscardProt(sim, net, cutoff, log_data, Δt_readout, readout_fidelity)
         end
     end
 
@@ -227,8 +231,10 @@ end
     sim,
     net,
     attempt_counter::Ref{Int},
+    Δt_CNOTgate::Float64,
     gate_fidelity::Float64,
-    Δt_meas::Float64,
+    Δt_readout::Float64,
+    readout_fidelity::Float64,
     cutoff::Float64,
     Δt_rotation_shuttle::Float64,
     global_pause::Ref{Float64},
@@ -246,16 +252,16 @@ end
         batch_time = now(sim)
 
         if batch_time < global_pause[]
-            @yield @process discard_bell_msgs(
+            @process discard_bell_msgs(
                 sim,
                 net,
                 msgs,
-                "switch is in global pause until $(global_pause[])",
+                global_pause[],
             )
             continue
         end
 
-        push!(pending_batches, msgs)
+        push!(pending_batches, msgs) # qeue up the bell pairs that have arrived
 
         if !worker_running[]
             worker_running[] = true
@@ -265,8 +271,10 @@ end
                 pending_batches,
                 worker_running,
                 attempt_counter,
+                Δt_CNOTgate,
                 gate_fidelity,
-                Δt_meas,
+                Δt_readout,
+                readout_fidelity,
                 cutoff,
                 Δt_rotation_shuttle,
                 global_pause,
@@ -277,25 +285,26 @@ end
 end
 
 
-@resumable function CutoffDiscardProt(sim, net, cutoff::Float64, log_data::Vector{LogRow}, Δt_meas::Float64)
+@resumable function CutoffDiscardProt(sim, net, cutoff::Float64, log_data::Vector{LogRow}, Δt_readout::Float64, readout_fidelity::Float64)
     # this process is triggered by the switch_listener and checks if there are any switch slots that have been stored for longer than the cutoff time.
 
-    msgs = queryall(net[1], SwitchSlotInfo, ❓, ❓, ❓; filo = false)
-    isempty(msgs) && return # no more switch slots to check
+    msgs = queryall(net[1], :isPiecemaker, ❓; assigned = true, filo = false)
+    @debug "CutoffDiscardProt: messages found: $(length(msgs))"
+    isempty(msgs) && return # nothing to discard
 
     for msg in msgs
-        time_of_creation = msg.tag[4]
+        time_of_creation = query(msg.slot, SwitchSlotInfo, ❓, ❓, ❓; assigned = true, filo = false).tag[4]
         if now(sim) - time_of_creation > cutoff
-            gensetinfo_msg = query(net[1][msg.slot.idx], :PartOfGenSet, ❓, ❓, ❓; filo = false)
+            gensetinfo_msg = query(msg.slot, :PartOfGenSet, ❓, ❓, ❓; filo = false)
             pm_slot_idx = gensetinfo_msg.tag[3]
             genset_idx = gensetinfo_msg.tag[2]
-            @yield @process consumer(sim, net, net[1][pm_slot_idx], genset_idx, true, log_data, Δt_meas) # if the cutoff time has been exceeded, we consume the GHZ state that was being built with the corresponding piecemaker slot to free up the switch slots
+            @yield @process consumer(sim, net, net[1][pm_slot_idx], genset_idx, true, log_data, Δt_readout, readout_fidelity) # if the cutoff time has been exceeded, we consume the GHZ state that was being built with the corresponding piecemaker slot to free up the switch slots
             break
         end
     end
 end
 
-@resumable function SwitchSlotProt(sim, net, switchslot_idx::Int, clientslot_idx::Int, tagid::Int, attempt_counter::Ref{Int}, gate_fidelity::Float64, Δt_meas::Float64, log_data::Vector{LogRow})
+@resumable function SwitchSlotProt(sim, net, switchslot_idx::Int, clientslot_idx::Int, tagid::Int, attempt_counter::Ref{Int}, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, log_data::Vector{LogRow})
     # this is a sequential protocol, meaning that it occupies the switch slots for its duration until fusion is complete
     # first it checks for all possible GHZ attempts to fuse with (using tag PartOfGenSet)
     # if the answer is (an)other slot(s) it calls fusion for the oldest piecemaker slot
@@ -355,27 +364,30 @@ end
             unlock(net[1][switchslot_idx])
         else
             # in this case we found a piecemaker slot within a suitable generator set and fuse with it
-            @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid, gate_fidelity, Δt_meas)
+            @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity)
 
             # check if after fusion the GHZ state is complete with 4 clients (i.e., the current slot was the last to complete the generator set)
             msgs = queryall(net[1], :PartOfGenSet, gen_set_idx, pmslot_to_fuse_with.idx, ❓; filo = false)
             if length(msgs) == 4 
-                @yield @process consumer(sim, net, pmslot_to_fuse_with, gen_set_idx, false, log_data, Δt_meas) # if the fused state is complete, run the consume listener to consume it;
+                @yield @process consumer(sim, net, pmslot_to_fuse_with, gen_set_idx, false, log_data, Δt_readout, readout_fidelity) # if the fused state is complete, run the consume listener to consume it;
             end
         end
     end
 end
 
-@resumable function fusion(sim, net, piecemaker_slot::RegRef, clientswitch_slot::RegRef, client_slot::RegRef, gen_set_idx::Int, tagid::Int, gate_fidelity::Float64, Δt_meas::Float64)
+@resumable function fusion(sim, net, piecemaker_slot::RegRef, clientswitch_slot::RegRef, client_slot::RegRef, gen_set_idx::Int, tagid::Int, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64)
     @yield lock(piecemaker_slot) & lock(clientswitch_slot) & lock(client_slot)
     apply!((piecemaker_slot, clientswitch_slot), CNOT)
-    @yield timeout(sim, Δt_CNOT)
+    @yield timeout(sim, Δt_CNOTgate)
     noisygate = sample_depol2q(gate_fidelity)
     !isnothing(noisygate[1]) && apply!(piecemaker_slot, noisygate[1])
     !isnothing(noisygate[2]) && apply!(clientswitch_slot, noisygate[2])
 
     res = project_traceout!(clientswitch_slot, σᶻ)
-    @yield timeout(sim, Δt_meas)
+    if rand() > readout_fidelity
+        res = 3 - res
+    end
+    @yield timeout(sim, Δt_readout)
     res == 2 && apply!(client_slot, X) # TODO: correction gate is now faster than light, add timeout!
     tag!(clientswitch_slot, Tag(:PartOfGenSet, gen_set_idx, piecemaker_slot.idx, tagid))
     unlock(piecemaker_slot)
@@ -385,7 +397,7 @@ end
 end
 
 
-@resumable function naive_entangler(sim, net, n, F_link, link_success_prob, attempt_t)
+@resumable function naive_entangler(sim, net, n, F_link, link_success_prob, attempt_t, Δt_rotation_shuttle)
     for i in 1:n
         # Entangler for generation of bell pairs
         entangler = EntanglerProt(
@@ -396,14 +408,15 @@ end
             rounds = -1, 
             attempts = -1, 
             attempt_time = attempt_t,
-            retry_lock_time = nothing
+            retry_lock_time = nothing# max(attempt_t, Δt_rotation_shuttle) #nothing
         )
 
         @process entangler()
     end
 end
 
-function prepare_sim(n, T_link::Float64, F_link::Float64, link_success_prob::Float64, attempt_t::Float64, gate_fidelity::Float64, Δt_meas::Float64, error_model::String, cutoff::Float64, Δt_rotation_shuttle::Float64, log_data::Vector{LogRow})
+function prepare_sim(n, T_link::Float64, F_link::Float64, link_success_prob::Float64, attempt_t::Float64, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64,
+    error_model::String, cutoff::Float64, Δt_rotation_shuttle::Float64, log_data::Vector{LogRow})
 
 
     states_representation = QuantumOpticsRepr()
@@ -433,41 +446,48 @@ function prepare_sim(n, T_link::Float64, F_link::Float64, link_success_prob::Flo
     attempt_counter = Ref(0)
     global_pause = Ref(0.0)
 
-    @process switch_listener(sim, net, attempt_counter, gate_fidelity, Δt_meas, cutoff, Δt_rotation_shuttle, global_pause, log_data)
-    @process naive_entangler(sim, net, n, F_link, link_success_prob, attempt_t)
+    @process switch_listener(sim, net, attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, cutoff, Δt_rotation_shuttle, global_pause, log_data)
+    @process naive_entangler(sim, net, n, F_link, link_success_prob, attempt_t, Δt_rotation_shuttle)
     return sim
 end
 
 ## run the simulation
-Δt_CNOT = 100e-6  # 100 µs
-Δt_rotation_shuttle = 100e-6  # 100 µs
 
-# setup parameters varied (in total 3*6*5*8*4*3 = 8640 simulations x 4 cutoffs)
+# setup parameters varied 
 attempt_times = [1e-6, 1e-5, 1e-4] # 3
-link_success_probs = [10.0^(-x) for x in 0.0:5.0] # 6
-T_coherences = [Inf, 1.0, 0.1, 0.01, 0.001] # 5
+link_success_probs = [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
+T_coherences = [2.0, 1.0, 0.1, 0.01] # 4
 F_links = [1.0 - 2.5^(-x) for x in 3.0:10.0] # 8
-gate_fidelities = [0.99, 0.995, 0.999, 1.0] # 4
-Δt_meas_list = [1e-3, 1e-4, 1e-5] # 3
+CNOTgate_times = [100e-6, 10e-6, 1e-6] # 3
+CNOTgate_fidelities = [0.9995, 0.9997, 0.9999, 0.99999] # 4
+readout_times = [2e-3, 1e-3, 1e-4] # 3
+readout_fidelities = [0.999, 0.9999, 1.0] # 3
+rotation_shuttle_times = [100e-6, 50e-6, 10e-6] # 3
+
 # all combinations of parameters
 parameter_combinations = [
-    (attempt_time, link_success_prob, T_coherence, F_link, gate_fidelity, Δt_meas) for attempt_time in attempt_times for link_success_prob in link_success_probs for T_coherence in T_coherences for F_link in F_links for gate_fidelity in gate_fidelities for Δt_meas in Δt_meas_list
+    (attempt_time, link_success_prob, T_coherence, F_link, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, Δt_rotation_shuttle)
+    for attempt_time in attempt_times for link_success_prob in link_success_probs
+        for T_coherence in T_coherences for F_link in F_links for gate_fidelity in CNOTgate_fidelities
+            for Δt_CNOTgate in CNOTgate_times for Δt_readout in readout_times for readout_fidelity in readout_fidelities for Δt_rotation_shuttle in rotation_shuttle_times
+            
 ]
+##
 
 function estimate_runtime_for_samples(
     target_samples::Int;
     n::Int,
     attempt_time::Float64,
     link_success_prob::Float64,
-    Δt_CNOT::Float64,
-    Δt_meas::Float64,
+    Δt_CNOTgate::Float64,
+    Δt_readout::Float64,
     Δt_rotation_shuttle::Float64
 )
     # Four Bell links are needed for one 4-client GHZ.
     t_link_per_sample = 4 * ( attempt_time / (n * link_success_prob) + Δt_rotation_shuttle )
 
     # A 4-client GHZ needs 3 fusions after the first piecemaker Bell pair.
-    t_gate_per_sample = 3 * (Δt_CNOT + Δt_meas) + Δt_meas
+    t_gate_per_sample = 3 * (Δt_CNOTgate + Δt_readout) + Δt_readout
 
     t_sample = t_link_per_sample + t_gate_per_sample
 
@@ -481,10 +501,13 @@ function run_sweep()
     link_success_prob = parameter_combinations[global_idx][2]
     T_coherence = parameter_combinations[global_idx][3]
     F_link = parameter_combinations[global_idx][4]
-    gate_fidelity = parameter_combinations[global_idx][5]
-    Δt_meas = parameter_combinations[global_idx][6]
+    Δt_CNOTgate = parameter_combinations[global_idx][5]
+    gate_fidelity = parameter_combinations[global_idx][6]
+    Δt_readout = parameter_combinations[global_idx][7]
+    readout_fidelity = parameter_combinations[global_idx][8]
+    Δt_rotation_shuttle = parameter_combinations[global_idx][9]
 
-    @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_meas=$(Δt_meas)"
+    @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_readout=$(Δt_readout), readout_fidelity=$(readout_fidelity)"
 
     log_data = LogRow[]
     dataframes = DataFrame[]
@@ -494,11 +517,12 @@ function run_sweep()
         n=codes[code][1],
         attempt_time=attempt_time,
         link_success_prob=link_success_prob,
-        Δt_CNOT=Δt_CNOT,
-        Δt_meas=Δt_meas,
+        Δt_CNOTgate=Δt_CNOTgate,
+        Δt_readout=Δt_readout,
         Δt_rotation_shuttle=Δt_rotation_shuttle
     )
-    for cutoff in [runtime/target_samples, runtime/target_samples*2, runtime/target_samples*5, Inf] # 4
+    for cutoff in [Inf, runtime/target_samples*2, runtime/target_samples] # 3
+        Random.seed!(seed)
 
         empty!(log_data)
 
@@ -508,8 +532,10 @@ function run_sweep()
             F_link,
             link_success_prob,
             attempt_time,
+            Δt_CNOTgate,
             gate_fidelity,
-            Δt_meas,
+            Δt_readout,
+            readout_fidelity,
             error_model,
             cutoff,
             Δt_rotation_shuttle,
@@ -539,22 +565,22 @@ function run_sweep()
         logs[!, :F_link] .= F_link
         logs[!, :error_model] .= error_model
         logs[!, :cutoff] .= cutoff
-        logs[!, :runtime] .= runtime
-        logs[!, :tCNOT] .= Δt_CNOT
-        logs[!, :tMeas] .= Δt_meas
         logs[!, :tRotationShuttle] .= Δt_rotation_shuttle
+        logs[!, :tCNOT] .= Δt_CNOTgate
         logs[!, :gate_fidelity] .= gate_fidelity
+        logs[!, :tReadout] .= Δt_readout
+        logs[!, :readout_fidelity] .= readout_fidelity
+        logs[!, :runtime] .= runtime
         logs[!, :wallclock_time] .= t_wallclock
         logs[!, :seed] .= seed
         logs[!, :nlogs] .= size(logs, 1)
 
         push!(dataframes, logs)
 
-        @debug link_success_prob attempt_time T_coherence F_link error_model cutoff runtime t_wallclock nlogs=size(logs, 1)
+        @info "cutoff: $cutoff, runtime: $runtime, wallclock_time: $t_wallclock, nlogs: $(size(logs, 1))"
     end
     df = vcat(dataframes...)
     return df
 end
 df = run_sweep()
-
 @save "$(output_path)/ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df

@@ -1,9 +1,14 @@
 using JLD2
 using Statistics
+using DataFrames
 
 ##
-@load "ghz_service_v1_dephasing_final.jld2" df
-df_dephase = df[df.num_clients .== 4, :]
+@load "src/ghz_service_v1_Steane7_depolarizing_1.jld2" df
+# df = df[df.num_clients .== 4, :]
+## count states per clients serviced
+df.clients_serviced = sort.(df.clients_serviced)
+df_count = combine(groupby(df, :clients_serviced), nrow => :count)
+df_count[!, :absdiff] .= (sum(abs.(df_count[:,2] .- df_count[:,2]'), dims=2) ./ length(df_count[:,2])) ./ df_count[:,2]
 
 ##
 @load "ghz_service_v1_depolarizing_final.jld2" df
@@ -228,15 +233,14 @@ grouped_df.link_success_prob  = round.(grouped_df.link_success_prob, digits=7)
 ## spider web plots
 using Random, Measures, Plots; gr()
 
-improvement = 
-
 Random.seed!(1789)
 
 baseline_target_values = Dict(
-    :attempt_time => [1e-6, 1e-6],
-    :link_success_prob => [1e-4, 0.01],
+    :attempt_time => [0.5, 2.0],
+    :link_success_prob => [3.1, 4.0],
     :T_coherence => [0.1, 2.0],
-    :F_link => [0.94, 0.998]
+    :F_link => [0.2, 2.0],
+    :Δt_measure => [0.1, 2.0]
 )
 
 improvement_factors = []
@@ -246,12 +250,16 @@ for (key, val) in baseline_target_values
     @info key, log(val[1])/log(val[2])
     push!(labels, string(key))
 end
-##
-push!(improvement_factors, improvement_factors[1])
+push!(improvement_factors, improvement_factors[1]) # periodicity for polar plot
+
+improvement_factors_1 = improvement_factors[1:end-1] .* rand(length(improvement_factors)-1) # randomize the second plot for demonstration
+push!(improvement_factors_1, improvement_factors_1[1]) # periodicity for polar plot
 
 n = length(labels)
 θ = LinRange(0, 2pi, n+1)
 z = 1.15*exp.(im*2π*(0:n-1)/n)
 
-plot(θ, improvement_factors, proj=:polar, ms=3, m=:o, c=:blue, fill=(true,:blues), fa=0.4, xaxis=false, margin=5mm) #lims=(0,1)
+plot(θ, improvement_factors, proj=:polar, ms=3, m=:o, c=:blue, fill=(true,:blues), fa=0.4, xaxis=false, margin=5mm, label="Steane 7") #lims=(0,1)
 annotate!(real.(z), imag.(z), text.(labels,12,"Computer Modern"))
+plot!(θ, improvement_factors_1, proj=:polar, ms=3, m=:o, c=:red, fill=(true,:reds), fa=0.4, label="BB 12")
+
