@@ -3,9 +3,12 @@ using Statistics
 using DataFrames
 
 ##
-@load "src/ghz_service_v1_Steane7_depolarizing_1.jld2" df
-# df = df[df.num_clients .== 4, :]
+@load "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1_1000samples/ghz_service_v1_Steane7_depolarizing_1.jld2" df
+# 
+
+
 ## count states per clients serviced
+df = df[df.num_clients .== 4, :]
 df.clients_serviced = sort.(df.clients_serviced)
 df_count = combine(groupby(df, :clients_serviced), nrow => :count)
 df_count[!, :absdiff] .= (sum(abs.(df_count[:,2] .- df_count[:,2]'), dims=2) ./ length(df_count[:,2])) ./ df_count[:,2]

@@ -455,9 +455,7 @@ end
 
 # setup parameters varied 
 attempt_times = [1e-6, 1e-5, 1e-4] # 3
-link_success_probs = [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
 T_coherences = [2.0, 1.0, 0.1, 0.01] # 4
-F_links = [1.0 - 2.5^(-x) for x in 3.0:10.0] # 8
 CNOTgate_times = [100e-6, 10e-6, 1e-6] # 3
 CNOTgate_fidelities = [0.9995, 0.9997, 0.9999, 0.99999] # 4
 readout_times = [2e-3, 1e-3, 1e-4] # 3
@@ -466,11 +464,10 @@ rotation_shuttle_times = [100e-6, 50e-6, 10e-6] # 3
 
 # all combinations of parameters
 parameter_combinations = [
-    (attempt_time, link_success_prob, T_coherence, F_link, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, Δt_rotation_shuttle)
-    for attempt_time in attempt_times for link_success_prob in link_success_probs
-        for T_coherence in T_coherences for F_link in F_links for gate_fidelity in CNOTgate_fidelities
-            for Δt_CNOTgate in CNOTgate_times for Δt_readout in readout_times for readout_fidelity in readout_fidelities for Δt_rotation_shuttle in rotation_shuttle_times
-            
+    (attempt_time, T_coherence, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, Δt_rotation_shuttle)
+    for attempt_time in attempt_times
+        for T_coherence in T_coherences for gate_fidelity in CNOTgate_fidelities
+            for Δt_CNOTgate in CNOTgate_times for Δt_readout in readout_times for readout_fidelity in readout_fidelities for Δt_rotation_shuttle in rotation_shuttle_times        
 ]
 ##
 
@@ -495,17 +492,15 @@ function estimate_runtime_for_samples(
 end
 
 
-function run_sweep()
+function run_sweep(F_link, link_success_prob)
 
     attempt_time = parameter_combinations[global_idx][1]
-    link_success_prob = parameter_combinations[global_idx][2]
-    T_coherence = parameter_combinations[global_idx][3]
-    F_link = parameter_combinations[global_idx][4]
-    Δt_CNOTgate = parameter_combinations[global_idx][5]
-    gate_fidelity = parameter_combinations[global_idx][6]
-    Δt_readout = parameter_combinations[global_idx][7]
-    readout_fidelity = parameter_combinations[global_idx][8]
-    Δt_rotation_shuttle = parameter_combinations[global_idx][9]
+    T_coherence = parameter_combinations[global_idx][2]
+    Δt_CNOTgate = parameter_combinations[global_idx][3]
+    gate_fidelity = parameter_combinations[global_idx][4]
+    Δt_readout = parameter_combinations[global_idx][5]
+    readout_fidelity = parameter_combinations[global_idx][6]
+    Δt_rotation_shuttle = parameter_combinations[global_idx][7]
 
     @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_readout=$(Δt_readout), readout_fidelity=$(readout_fidelity)"
 
@@ -582,5 +577,15 @@ function run_sweep()
     df = vcat(dataframes...)
     return df
 end
-df = run_sweep()
-@save "$(output_path)/ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df
+
+dfs = DataFrame[]
+for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
+    for F_link in [1.0 - 2.5^(-x) for x in 3.0:10.0] # 8
+        df = run_sweep(F_link, link_success_prob)
+        push!(dfs, df)
+        @info "Completed sweep for F_link=$(F_link), link_success_prob=$(link_success_prob)"
+    end
+end
+df_out = vcat(dfs...)
+
+@save "$(output_path)/ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df_out
