@@ -19,7 +19,7 @@ for file in readdir(folder)[start_index:end_index]
 
     path = joinpath(folder, file)
     try 
-        @load path df_out
+        JLD2.load(path, "df_out")
     catch err
         @info "Failed to load file: $file. Error: $err"
         continue
