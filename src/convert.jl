@@ -9,7 +9,7 @@ start_time = time()
 folder = length(ARGS) >= 1 ? ARGS[1] : "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1"
 outfolder = length(ARGS) >= 2 ? ARGS[2] : "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1/"
 
-for file in readdir(folder)[1:10]
+for file in readdir(folder)[1:100]
     endswith(file, ".jld2") || continue
 
     path = joinpath(folder, file)
