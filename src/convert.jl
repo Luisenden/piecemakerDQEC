@@ -8,8 +8,13 @@ start_time = time()
 
 folder = length(ARGS) >= 1 ? ARGS[1] : "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1"
 outfolder = length(ARGS) >= 2 ? ARGS[2] : "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1/"
+start_index = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 
-for file in readdir(folder)[1:100]
+conversion_files = readdir(folder)
+end_index = min(start_index + 100, length(conversion_files))
+
+
+for file in readdir(folder)[start_index:end_index]
     endswith(file, ".jld2") || continue
 
     path = joinpath(folder, file)
