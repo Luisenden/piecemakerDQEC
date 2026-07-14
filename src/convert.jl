@@ -8,7 +8,7 @@ folder = length(ARGS) >= 1 ? ARGS[1] : "/Users/localadmin/Library/CloudStorage/O
 outfolder = length(ARGS) >= 2 ? ARGS[2] : "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1/"
 start_index = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 
-conversion_files = ["ghz_service_v1_Steane7_depolarizing_$(i)" for i in 1:3888]  # 3888 files
+conversion_files = ["ghz_service_v1_Steane7_depolarizing_$(i).jld2" for i in 1:3888]  # 3888 files
 end_index = min(start_index+2, length(conversion_files))
 
 
