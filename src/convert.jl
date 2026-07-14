@@ -9,7 +9,7 @@ outfolder = length(ARGS) >= 2 ? ARGS[2] : "/Users/localadmin/Library/CloudStorag
 start_index = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 
 conversion_files = ["ghz_service_v1_Steane7_depolarizing_$(i).jld2" for i in 1:3888]  # 3888 files
-end_index = min(start_index+2, length(conversion_files))
+end_index = min(start_index+100, length(conversion_files))
 
 
 for file in conversion_files[start_index:end_index]
@@ -18,13 +18,18 @@ for file in conversion_files[start_index:end_index]
     endswith(file, ".jld2") || continue
 
     path = joinpath(folder, file)
+    
+    df_out = nothing
     try
-        @load path df_out
+        df_out = JLD2.load(path, "df_out")
         @info "Loaded file: $path."
     catch err
         @info "Failed to load file: $path"
         continue
     end
+
+    isnothing(df_out) && continue
+
     df_out[!, :depolarizing] = df_out[!, :error_model] .== "depolarizing"
     df_out[!, :dephasing] = df_out[!, :error_model] .== "dephasing"
 
