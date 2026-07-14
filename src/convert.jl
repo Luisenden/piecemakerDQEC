@@ -9,7 +9,7 @@ outfolder = length(ARGS) >= 2 ? ARGS[2] : "/Users/localadmin/Library/CloudStorag
 start_index = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 
 conversion_files = readdir(folder)
-end_index = min(start_index+100, length(conversion_files))
+end_index = min(start_index+2, length(conversion_files))
 
 
 for file in readdir(folder)[start_index:end_index]
@@ -40,6 +40,7 @@ for file in readdir(folder)[start_index:end_index]
 
     outpath = joinpath(outfolder, replace(file, ".jld2" => ".csv"))
     CSV.write(outpath, df_out)
+    rm(path)
 
     end_time = time()
     @info "Conversion completed in $(end_time - start_time) seconds."
