@@ -6,13 +6,10 @@ using StatsPlots
 
 folder = length(ARGS) >= 1 ? ARGS[1] : "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1"
 outfolder = length(ARGS) >= 2 ? ARGS[2] : "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1/"
-start_index = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
+index = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 
-conversion_files = ["ghz_service_v1_Steane7_depolarizing_$(i).jld2" for i in 1:3888]  # 3888 files
-end_index = min(start_index+100, length(conversion_files))
-
-
-for file in conversion_files[start_index:end_index]
+for i in index:100:3888
+    file = "ghz_service_v1_Steane7_depolarizing_$(i).jld2"
     start_time = time()
 
     endswith(file, ".jld2") || continue
