@@ -1,14 +1,69 @@
 using JLD2
 using Statistics
 using DataFrames
+using CSV
+using StatsPlots
 
 ##
-@load "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1_1000samples/ghz_service_v1_Steane7_depolarizing_1.jld2" df
-# 
+
+folder = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1_csv"
+files = readdir(folder)
+files = ["ghz_service_v1_Steane7_depolarizing_$(i).csv" for i in 1:60]
+##
+columns =  [:attempt_time, :T_coherence, :error_model, :cutoff, :tRotationShuttle, :tCNOT, :gate_fidelity, 
+            :tReadout, :readout_fidelity, :runtime, :wallclock_time, :nlogs]
+
+dfs = DataFrame[]
+for file in files[5:end]
+    path = joinpath(folder, file)
+    df = CSV.read(path, DataFrame)
+    df = df[df.client_1 .& df.client_2 .& df.client_3 .& df.client_4, :]
+    @info "Loaded file"
+    isempty(df) && continue
+    @info "Loaded file: $file with $(nrow(df)) rows."
+    summary = combine(groupby(df, [columns;[:cutoff, :link_success_prob, :F_link]]), # add remaining parameters in order to have the values in the summary table!
+        :GHZfidel => mean => :mean_GHZfidel, 
+        :GHZfidel => std => :std_GHZfidel,
+        :GHZfidel => x -> std(x)/sqrt(length(x)) => :sem_GHZfidel,
+        :timesteps => x -> length(x)/maximum(x) => :mean_rate,
+        :timesteps => x -> mean([first(x); diff(x)]) => :mean_generation_time,
+        :timesteps => x -> std([first(x); diff(x)]) => :std_generation_time,
+        :timesteps => x -> std([first(x); diff(x)])/sqrt(length(x)) => :sem_generation_time,)
+
+    push!(dfs, summary)
+end
+df_total = vcat(dfs...)
+#CSV.write(folder * "/SUMMARY_ghz_service_v1_steane7_depolarizing.csv", df_total)
 
 
+
+##
+
+df_out[!, :depolarizing] = df_out[!, :error_model] .== "depolarizing"
+df_out[!, :dephasing] = df_out[!, :error_model] .== "dephasing"
+select!(df_out, Not(:error_model))
+
+for i in 1:4
+    df_out[!, Symbol("client_$i")] = in.(i, df_out[!, :clients_serviced])
+end
+
+for col in names(df_out, Int64)
+    df_out[!, col] = Int32.(df_out[!, col])
+end
+
+for col in names(df_out, Float64)
+    df_out[!, col] = Float32.(df_out[!, col])
+end
+
+select!(df_out, Not(:clients_serviced))
+
+describe(df_out)
+CSV.write("/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1/ghz_service_v1_Steane7_depolarizing_23.csv", df_out)
+##
+@df df_out histogram(:nlogs, bins=50, xlabel="Number of Logs", ylabel="Count", title="Histogram of Mean GHZ Fidelity")
 ## count states per clients serviced
 df = df[df.num_clients .== 4, :]
+
 df.clients_serviced = sort.(df.clients_serviced)
 df_count = combine(groupby(df, :clients_serviced), nrow => :count)
 df_count[!, :absdiff] .= (sum(abs.(df_count[:,2] .- df_count[:,2]'), dims=2) ./ length(df_count[:,2])) ./ df_count[:,2]

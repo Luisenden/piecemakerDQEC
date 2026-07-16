@@ -61,7 +61,7 @@ const CLIENT_TO_CLIENTINCOMMON = Dict(
     for i in 1:codes[code][1]
 )
 
-const LogRow = Tuple{Float64, Vector{Int}, Float64, Bool}
+const LogRow = Tuple{Float64, Int, Float64}
 
 function noisy_bell_state(target_fidelity::Float64=0.97)
     λ = (4 * target_fidelity - 1) / 3
@@ -147,9 +147,8 @@ end
     # we can do  some logging here if we want to track consumption times etc.
     push!(log_data, (
         time_of_consumption,
-        switchslots_idcs,
+        iscutoff ? 0 : gen_set_index,
         fidelity,
-        iscutoff, # discarded
     ))
 end
 
@@ -494,13 +493,13 @@ end
 
 function run_sweep(F_link, link_success_prob)
 
-    attempt_time = parameter_combinations[global_idx][1]
-    T_coherence = parameter_combinations[global_idx][2]
-    Δt_CNOTgate = parameter_combinations[global_idx][3]
-    gate_fidelity = parameter_combinations[global_idx][4]
-    Δt_readout = parameter_combinations[global_idx][5]
-    readout_fidelity = parameter_combinations[global_idx][6]
-    Δt_rotation_shuttle = parameter_combinations[global_idx][7]
+    attempt_time = 1e-6 # parameter_combinations[global_idx][1]
+    T_coherence = 1.0 # parameter_combinations[global_idx][2]
+    Δt_CNOTgate = 100e-6 # parameter_combinations[global_idx][3]
+    gate_fidelity = 0.9997 # parameter_combinations[global_idx][4]
+    Δt_readout = 2e-3 # parameter_combinations[global_idx][5]
+    readout_fidelity = 0.999 # parameter_combinations[global_idx][6]
+    Δt_rotation_shuttle = 100e-6 # parameter_combinations[global_idx][7]
 
     @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_readout=$(Δt_readout), readout_fidelity=$(readout_fidelity)"
 
@@ -544,16 +543,22 @@ function run_sweep(F_link, link_success_prob)
             log_data,
             [
                 :timesteps,
-                :clients_serviced,
+                :generator_idx,
                 :GHZfidel,
-                :discarded,
             ],
         )
 
-        logs = transform(logs, :timesteps => (x -> [0.0; diff(x)]) => :time_diff)
-        logs = transform(logs, :clients_serviced => (x -> length.(x)) => :num_clients)
+        logs = combine(groupby(logs, :generator_idx), 
+            :GHZfidel => mean => :mean_GHZfidel,
+            :GHZfidel => std => :std_GHZfidel,
+            :GHZfidel => (x -> std(x)/sqrt(length(x))) => :sem_GHZfidel,
+            :timesteps => (x -> length(x)/maximum(x)) => :mean_rate,
+            :timesteps => (x -> mean([first(x); diff(x)])) => :mean_generation_time,
+            :timesteps => (x -> std([first(x); diff(x)])) => :std_generation_time,
+            :timesteps => (x -> std([first(x); diff(x)])/sqrt(length(x))) => :sem_generation_time,
+            nrow => :nlogs,
+        )
         
-        logs[!, :n] .= codes[code][1]
         logs[!, :link_success_prob] .= link_success_prob
         logs[!, :attempt_time] .= attempt_time
         logs[!, :T_coherence] .= T_coherence
@@ -568,7 +573,6 @@ function run_sweep(F_link, link_success_prob)
         logs[!, :runtime] .= runtime
         logs[!, :wallclock_time] .= t_wallclock
         logs[!, :seed] .= seed
-        logs[!, :nlogs] .= size(logs, 1)
 
         push!(dataframes, logs)
 
@@ -577,6 +581,8 @@ function run_sweep(F_link, link_success_prob)
     df = vcat(dataframes...)
     return df
 end
+
+##
 
 dfs = DataFrame[]
 for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
@@ -588,4 +594,4 @@ for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
 end
 df_out = vcat(dfs...)
 
-@save "$(output_path)/ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df_out
+@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_CURRENT.jld2" df_out
