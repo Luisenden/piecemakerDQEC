@@ -493,13 +493,13 @@ end
 
 function run_sweep(F_link, link_success_prob)
 
-    attempt_time = 1e-6 # parameter_combinations[global_idx][1]
-    T_coherence = 1.0 # parameter_combinations[global_idx][2]
-    Δt_CNOTgate = 100e-6 # parameter_combinations[global_idx][3]
-    gate_fidelity = 0.9997 # parameter_combinations[global_idx][4]
-    Δt_readout = 2e-3 # parameter_combinations[global_idx][5]
-    readout_fidelity = 0.999 # parameter_combinations[global_idx][6]
-    Δt_rotation_shuttle = 100e-6 # parameter_combinations[global_idx][7]
+    attempt_time = parameter_combinations[global_idx][1]
+    T_coherence = parameter_combinations[global_idx][2]
+    Δt_CNOTgate = parameter_combinations[global_idx][3]
+    gate_fidelity = parameter_combinations[global_idx][4]
+    Δt_readout = parameter_combinations[global_idx][5]
+    readout_fidelity = parameter_combinations[global_idx][6]
+    Δt_rotation_shuttle = parameter_combinations[global_idx][7]
 
     @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_readout=$(Δt_readout), readout_fidelity=$(readout_fidelity)"
 
@@ -594,4 +594,4 @@ for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
 end
 df_out = vcat(dfs...)
 
-@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_CURRENT.jld2" df_out
+@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model).jld2" df_out

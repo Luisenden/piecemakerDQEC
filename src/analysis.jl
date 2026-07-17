@@ -2,21 +2,88 @@
 ##
 using DataFrames
 using StatsPlots 
+using CSV
+using LaTeXStrings
 
-alllogs = vcat(dataframes...;)
-# calculate rate from time_diff (ignore values where time_diff is 0 s)
 
-alllogs[!, "rate"] = 1.0 ./ alllogs.time_diff
-
-grouped_rate = combine(groupby(alllogs, [:attempt_time, :rate]), :rate => mean => :mean_rate)
-
-@df grouped_rate scatter(:attempt_time, :mean_rate,
-    xscale = :log10,
-    xlabel = "attempt_time (s)",
-    ylabel = "rate (Hz)",
-    legend = true,
+default(
+    fontfamily = "Computer Modern",
+    labelfontsize = 14,
+    tickfontsize = 14,
+    linewidth = 2,
+    markersize = 4,
+    grid = true,
+    minorgrid = true,
+    framestyle = :box,
+    dpi = 300,            # relevant for PNG output; PDFs are vector anyway
+    size = (600, 400),
 )
 
+
+##
+
+@load "summary_ghz_service_v1_Steane7_depolarizing_CURRENT.jld2" df_out
+##
+df_nocutoff = df_out[df_out.cutoff .== Inf, :]
+combined_logs = combine(groupby(df_nocutoff, [:generator_idx, :link_success_prob]),
+:mean_generation_time => (x -> mean(x)) => :mean_mean_generation_time,
+:sem_generation_time => (x -> mean(x)) => :sem_mean_generation_time
+)
+
+@df combined_logs scatter(:link_success_prob, :mean_mean_generation_time,
+    group = :generator_idx,
+    yerr = :sem_mean_generation_time,
+    xlabel = L"p_{\mathrm{link}}", 
+    ylabel = L"\mathrm{Mean\ Generation\ Time\ (s)}", 
+    xscale = :log10,
+    markershape = :utriangle,
+    minorgrid = true,
+    markersize = 4,
+    alpha = 0.8,
+)
+
+##
+combined_logs = combine(groupby(combined_logs, [:link_success_prob]),
+:mean_mean_generation_time => (x -> mean(abs.(diff(x)))/mean(x)) => :mean_absdiff,
+:mean_mean_generation_time => (x -> std(abs.(diff(x)))/mean(x)) => :std_absdiff,
+)
+savefig("mean_generation_time.pdf")
+##
+@df combined_logs scatter(:link_success_prob, :mean_absdiff,
+    xlabel = L"p_{\mathrm{link}}", 
+    ylabel = "Relative Mean Difference", 
+    xscale = :log10,
+    yscale = :log10,
+    yerror = :std_absdiff,  # Assuming you have a column for error bars
+    markershape = :utriangle,
+    minorgrid = true,
+    markersize = 4,
+    alpha = 0.8,
+    label = nothing
+)
+
+savefig("mean_generation_time_variability.pdf")
+##s
+df_out_nocutoff = df_out[df_out.cutoff .== Inf, :]
+@df df_out_nocutoff histogram(:mean_GHZfidel, 
+    group = :stabilizers,
+    xlabel = L"\mathrm{Mean\ GHZ\ Fidelity}",
+    ylabel = "Count",
+)
+
+##
+@df df_out_nocutoff scatter(:link_success_prob, :mean_GHZfidel, 
+    markerstyle = :stabilizers,
+    group = :F_link, 
+    xlabel = L"p_{\mathrm{link}}", 
+    ylabel = L"\mathrm{Mean\ GHZ\ Fidelity}", 
+    xscale = :log10,
+    title = "No Cutoff (cutoff=∞)",
+    legendtitle = L"F_{Bell}",
+    markershape = :circle,
+    markersize = 4,
+    alpha = 0.8,
+)
 ##
 
 # 1) Count rows per unique clients_serviced group
