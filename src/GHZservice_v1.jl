@@ -594,4 +594,4 @@ for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
 end
 df_out = vcat(dfs...)
 
-@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model).jld2" df_out
+@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df_out
