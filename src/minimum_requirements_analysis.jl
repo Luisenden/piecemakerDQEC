@@ -3,102 +3,76 @@ using Statistics
 using DataFrames
 using CSV
 using StatsPlots
+include("utils_pseudothreshold.jl")
+
+using Logging
 
 ##
+function extract_pL(gen_time, F_GHZ; nsamples=100_000)
+    p_mem_val = p_mem(gen_time * 2)  # generation time per stabilizer generator takes twice as long
 
-folder = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1_csv"
+    setup = CShorSyndromeECCSetup(p_mem_val, 1.0, F_GHZ)
+    decoder = TableDecoder(code)
+
+    r = cevaluate_decoder(decoder, setup, nsamples)
+
+    return (
+        pL = maximum(r),
+        p_mem = p_mem_val,
+    )
+end
+##
+
+folder = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1"
 files = readdir(folder)
-files = ["ghz_service_v1_Steane7_depolarizing_$(i).csv" for i in 1:60]
 ##
-columns =  [:attempt_time, :T_coherence, :error_model, :cutoff, :tRotationShuttle, :tCNOT, :gate_fidelity, 
+columns =  [:attempt_time, :T_coherence, :error_model, :tRotationShuttle, :tCNOT, :gate_fidelity, 
             :tReadout, :readout_fidelity, :runtime, :wallclock_time, :nlogs]
 
 dfs = DataFrame[]
-for file in files[5:end]
+df_out = nothing
+for file in files
     path = joinpath(folder, file)
-    df = CSV.read(path, DataFrame)
-    df = df[df.client_1 .& df.client_2 .& df.client_3 .& df.client_4, :]
-    @info "Loaded file"
-    isempty(df) && continue
-    @info "Loaded file: $file with $(nrow(df)) rows."
-    summary = combine(groupby(df, [columns;[:cutoff, :link_success_prob, :F_link]]), # add remaining parameters in order to have the values in the summary table!
-        :GHZfidel => mean => :mean_GHZfidel, 
-        :GHZfidel => std => :std_GHZfidel,
-        :GHZfidel => x -> std(x)/sqrt(length(x)) => :sem_GHZfidel,
-        :timesteps => x -> length(x)/maximum(x) => :mean_rate,
-        :timesteps => x -> mean([first(x); diff(x)]) => :mean_generation_time,
-        :timesteps => x -> std([first(x); diff(x)]) => :std_generation_time,
-        :timesteps => x -> std([first(x); diff(x)])/sqrt(length(x)) => :sem_generation_time,)
-
-    push!(dfs, summary)
+    try
+        @load path df_out
+    catch
+    end
+    !isnothing(df_out) && push!(dfs, df_out)
 end
-df_total = vcat(dfs...)
-#CSV.write(folder * "/SUMMARY_ghz_service_v1_steane7_depolarizing.csv", df_total)
-
-
+df = vcat(dfs...)
 
 ##
-
-df_out[!, :depolarizing] = df_out[!, :error_model] .== "depolarizing"
-df_out[!, :dephasing] = df_out[!, :error_model] .== "dephasing"
-select!(df_out, Not(:error_model))
-
-for i in 1:4
-    df_out[!, Symbol("client_$i")] = in.(i, df_out[!, :clients_serviced])
-end
-
-for col in names(df_out, Int64)
-    df_out[!, col] = Int32.(df_out[!, col])
-end
-
-for col in names(df_out, Float64)
-    df_out[!, col] = Float32.(df_out[!, col])
-end
-
-select!(df_out, Not(:clients_serviced))
-
-describe(df_out)
-CSV.write("/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cluster/output_v1/ghz_service_v1_Steane7_depolarizing_23.csv", df_out)
-##
-@df df_out histogram(:nlogs, bins=50, xlabel="Number of Logs", ylabel="Count", title="Histogram of Mean GHZ Fidelity")
-## count states per clients serviced
-df = df[df.num_clients .== 4, :]
-
-df.clients_serviced = sort.(df.clients_serviced)
-df_count = combine(groupby(df, :clients_serviced), nrow => :count)
-df_count[!, :absdiff] .= (sum(abs.(df_count[:,2] .- df_count[:,2]'), dims=2) ./ length(df_count[:,2])) ./ df_count[:,2]
+df = df[df.generator_idx .== 1, :]
+#df = df[df.cutoff .== Inf, :]
 
 ##
-@load "ghz_service_v1_depolarizing_final.jld2" df
-df_depol = df[df.num_clients .== 4, :]
-
-df = vcat(df_dephase, df_depol)
-##
-
-groupby_columns = [:error_model, :attempt_time, :link_success_prob, :T_coherence, :F_link, :runtime, :cutoff]
-grouped_df = combine(groupby(df, groupby_columns),
-    :GHZfidel => mean => :mean_GHZfidel,
-    :GHZfidel => std => :std_GHZfidel,
-    nrow => :nlogs
-)
-grouped_df[!, :rate] = grouped_df.nlogs ./ grouped_df.runtime
+T_coh = 1.0
+p_mem(Δt_GHZ) = (3/4) * (1 - exp(-Δt_GHZ / T_coh))
+#df = df[p_mem.(df.mean_generation_time .* 2) .<= 0.1, :]
 
 ##
-target_rate = 100.0 # Hz
-target_fidelity = 0.99
-grouped_df_above_fidelity_target = grouped_df[grouped_df.mean_GHZfidel .>= target_fidelity, :]
-grouped_df_above_rate_target = grouped_df[grouped_df.rate .>= target_rate, :]
-grouped_df_above_both_targets = grouped_df[(grouped_df.mean_GHZfidel .>= target_fidelity) .&& (grouped_df.rate .>= target_rate), :]
+code = Steane7()
+res = []
+count = 0
 
-
-## pareto front analysis
+res = pL_fit.(p_mem.(df.mean_generation_time .* 2), 1.0 .- df.mean_GHZfidel) #extract_pL.(df.mean_generation_time .* 2, df.mean_GHZfidel; nsamples=100_000)
+##
+df_both_targets = df[res .<= p_mem.(df.mean_generation_time .* 2) .* 0.85 , :]
+#@save "df_both_targets_pmem.jld2" df_both_targets
+##
+# @load "df_both_targets_pmem.jld2" df_both_targets
+## pareto front analysis (this can take several minutes)
 
 objectives = [
+    (:readout_fidelity, :min),
+    (:tReadout, :max),
+    (:gate_fidelity, :min),
+    (:tCNOT, :max),
+    (:tRotationShuttle, :max),
     (:attempt_time, :max),
     (:link_success_prob, :min),
     (:T_coherence, :min),
     (:F_link, :min),
-    (:cutoff, :max),
 ]
 
 function better_or_equal(a, b, sense)
@@ -126,6 +100,7 @@ function pareto_front(df, objectives)
     dominated = falses(n)
 
     for i in 1:n
+        @info "done $(i)/$(n)"
         for j in 1:n
             i == j && continue
 
@@ -149,8 +124,9 @@ function pareto_front(df, objectives)
     return df[.!dominated, :]
 end
 
-pareto_df = pareto_front(grouped_df_above_both_targets, objectives)
-
+pareto_df = pareto_front(df_both_targets, objectives)
+##
+#@load "pareto_df_pmem.jld2" pareto_df
 
 ##
 using DataFrames, Plots, Printf, LaTeXStrings
@@ -158,7 +134,7 @@ using Plots.PlotMeasures
 using StatsPlots
 
 ##
-params = [:attempt_time, :link_success_prob, :T_coherence, :F_link, :cutoff]
+params = [obj[1] for obj in objectives]
 
 function fmtval(x)
     if x isa AbstractFloat
@@ -188,7 +164,10 @@ function count_matrix_for_param(d, p, vals, models; groupcol=:error_model)
         subvals = collect(skipmissing(d[d[!, groupcol] .== model, p]))
 
         for (vidx, v) in enumerate(vals)
-            counts[vidx, midx] = count(x -> isequal(x, v), subvals)
+            counts[vidx, midx] = Base.count(
+                x -> isequal(x, v),
+                subvals
+            )
         end
     end
 
@@ -198,7 +177,7 @@ end
 function plot_value_counts_many(
     dfs;
     labels = ["df$i" for i in eachindex(dfs)],
-    groupcol = :error_model,
+    groupcol = :generator_idx,
     params = [:attempt_time, :link_success_prob, :T_coherence, :F_link],
     map_params_to_latx_symbols = Dict(
         :attempt_time => L"\Delta t_\mathrm{attempt}",
@@ -257,67 +236,313 @@ function plot_value_counts_many(
 end
 
 plot_value_counts_many(
-    [grouped_df_above_fidelity_target, grouped_df_above_rate_target, grouped_df_above_both_targets, pareto_df],;
-    labels = [
-        latexstring("F_{\\mathrm{GHZ}} \\geq ", target_fidelity),
-        latexstring("\\mathrm{Delivery\\ rate} \\geq ", target_rate, "\\,\\mathrm{Hz}"),
+    [df_both_targets, pareto_df],;
+    labels = [ 
         L"\mathrm{both\ targets}",
         L"\mathrm{Pareto\ front}",
     ],
 )
 
-savefig("minimum_requirements_analysis.pdf")
+savefig("minimum_requirements_analysis_pmem.pdf")
 
 ##
-grouped_df_nocutoff = grouped_df#[grouped_df.cutoff .== Inf, :]
-grouped_df_depol = grouped_df_nocutoff[grouped_df_nocutoff.error_model .== "depolarizing", :]
-grouped_df_attempt_time_1ms = grouped_df_depol[grouped_df_depol.attempt_time .== 0.001, :]
+best_row = pareto_df[1, :]
+# best_row_rate = pareto_df[argmin(pareto_df.mean_generation_time), :]
 
-grouped_df.link_success_prob  = round.(grouped_df.link_success_prob, digits=7)
-@df grouped_df scatter(
-    :rate, 1 .- :mean_GHZfidel,
-    yerror = :std_GHZfidel/sqrt.(grouped_df.nlogs),
-    group = :link_success_prob,
-    yscale = :log10,
-    xscale = :log10,
-    ylabel = L"GHZ state infidelity $(1-F_{\mathrm{GHZ}})$",
-    xlabel = "Delivery rate (Hz)",
-    title = "Simulated data points",
-    legendtitle = "Link success prob.",
-    minorgrid = true,
-    legend = :outerright,
+
+GHZ_fidelity = 0.0626556
+p_mem_val = p_mem(49.4259*2)
+setup = CShorSyndromeECCSetup(p_mem_val, 1.0, GHZ_fidelity)
+decoder = TableDecoder(code)
+r = cevaluate_decoder(decoder, setup, 10_000)
+
+@info r
+@info p_mem_val
+
+##
+
+using Random, Measures, Plots, LaTeXStrings
+gr()
+
+
+baseline_values = (
+    readout_fidelity  = 0.999,
+    tReadout          = 0.001,
+    gate_fidelity     = 0.9997,
+    tCNOT             = 100e-6,
+    tRotationShuttle  = 100e-6,
+    attempt_time      = 10e-6,
+    link_success_prob = 1e-4,
+    T_coherence       = 1.0,
+    F_link            = 0.97,
 )
 
-## spider web plots
-using Random, Measures, Plots; gr()
 
-Random.seed!(1789)
+depolarizing_probability(F) = (4F - 1) / 3
 
-baseline_target_values = Dict(
-    :attempt_time => [0.5, 2.0],
-    :link_success_prob => [3.1, 4.0],
-    :T_coherence => [0.1, 2.0],
-    :F_link => [0.2, 2.0],
-    :Δt_measure => [0.1, 2.0]
-)
 
-improvement_factors = []
-labels = []
-for (key, val) in baseline_target_values
-    push!(improvement_factors, abs(log(val[1])/log(val[2])))
-    @info key, log(val[1])/log(val[2])
-    push!(labels, string(key))
+function improvement_factors(dom_solution_values)
+    probability_factor(value, baseline) =
+        value == 1 ? Inf : log(baseline) / log(value)
+
+    time_factor(value, baseline) = baseline / value
+
+    Dict(
+        :readout_fidelity => probability_factor(
+            dom_solution_values.readout_fidelity,
+            baseline_values.readout_fidelity,
+        ),
+
+        :tReadout => time_factor(
+            dom_solution_values.tReadout,
+            baseline_values.tReadout,
+        ),
+
+        :gate_fidelity => probability_factor(
+            depolarizing_probability(dom_solution_values.gate_fidelity),
+            depolarizing_probability(baseline_values.gate_fidelity),
+        ),
+
+        :tCNOT => time_factor(
+            dom_solution_values.tCNOT,
+            baseline_values.tCNOT,
+        ),
+
+        :tRotationShuttle => time_factor(
+            dom_solution_values.tRotationShuttle,
+            baseline_values.tRotationShuttle,
+        ),
+
+        :attempt_time => time_factor(
+            dom_solution_values.attempt_time,
+            baseline_values.attempt_time,
+        ),
+
+        :link_success_prob => probability_factor(
+            dom_solution_values.link_success_prob,
+            baseline_values.link_success_prob,
+        ),
+
+        :T_coherence =>
+            dom_solution_values.T_coherence /
+            baseline_values.T_coherence,
+
+        :F_link => probability_factor(
+            depolarizing_probability(dom_solution_values.F_link),
+            depolarizing_probability(baseline_values.F_link),
+        ),
+    )
 end
-push!(improvement_factors, improvement_factors[1]) # periodicity for polar plot
 
-improvement_factors_1 = improvement_factors[1:end-1] .* rand(length(improvement_factors)-1) # randomize the second plot for demonstration
-push!(improvement_factors_1, improvement_factors_1[1]) # periodicity for polar plot
+##
+axis_order = [
+    :gate_fidelity,
+    :tReadout,
+    :readout_fidelity,
+    :F_link,
+    :T_coherence,
+    :link_success_prob,
+    :attempt_time,
+    :tRotationShuttle,
+    :tCNOT,
+]
 
-n = length(labels)
-θ = LinRange(0, 2pi, n+1)
-z = 1.15*exp.(im*2π*(0:n-1)/n)
 
-plot(θ, improvement_factors, proj=:polar, ms=3, m=:o, c=:blue, fill=(true,:blues), fa=0.4, xaxis=false, margin=5mm, label="Steane 7") #lims=(0,1)
-annotate!(real.(z), imag.(z), text.(labels,12,"Computer Modern"))
-plot!(θ, improvement_factors_1, proj=:polar, ms=3, m=:o, c=:red, fill=(true,:reds), fa=0.4, label="BB 12")
+params = [
+    L"F_{\mathrm{CNOT}}",
+    L"t_{\mathrm{ro}}",
+    L"F_{\mathrm{ro}}",
+    L"F_{\mathrm{link}}",
+    L"T_{\mathrm{coh}}",
+    L"p_{\mathrm{link}}",
+    L"t_{\mathrm{att}}",
+    L"t_{\mathrm{rs}}",
+    L"t_{\mathrm{CNOT}}",
+]
 
+
+function spiderplot(
+    solutions...;
+    labels = nothing,
+    colors = [
+        :blue,
+        :red,
+        :green,
+        :orange,
+        :purple,
+        :brown,
+        :magenta,
+        :cyan,
+    ],
+)
+    isempty(solutions) &&
+        throw(ArgumentError("Provide at least one solution."))
+
+    # Calculate improvement factors for every solution
+    factors = improvement_factors.(solutions)
+
+    # Extract values in exactly the same order for every solution
+    radii_original = [
+        Float64[solution_factors[key] for key in axis_order]
+        for solution_factors in factors
+    ]
+
+    # Use all plotted solutions to determine one common radial scale
+    all_radii = reduce(vcat, radii_original)
+
+    n = length(axis_order)
+    θ = collect(range(0, 2π; length = n + 1))
+
+    # Powers of ten that should appear on the radial axis
+    min_exp = floor(Int, log10(minimum(all_radii)))
+    max_exp = ceil(Int, log10(maximum(all_radii)))
+
+    # Add an offset because polar radii cannot be negative
+    offset = -min_exp + 0.5
+
+    tick_exponents = collect(min_exp:max_exp)
+    tick_positions = tick_exponents .+ offset
+
+    # tick_labels = [
+    #     L"0.01", L"0.1", L"1", L"10", L"100", L"1000"
+    # ]
+
+    tick_labels = [
+    latexstring("10^{", e, "}")
+    for e in tick_exponents
+    ]
+    
+    # Preserve the original automatic label format unless labels are supplied
+    if labels === nothing
+        labels = [
+            string(
+                round(solution[:mean_GHZfidel]; digits = 4),
+                ", ",
+                round(1.0/solution[:mean_generation_time]; digits = 2), "Hz",
+            )
+            for solution in solutions
+        ]
+    elseif length(labels) != length(solutions)
+        throw(
+            ArgumentError(
+                "The number of labels must equal the number of solutions.",
+            ),
+        )
+    end
+
+    # First solution creates the plot
+    first_radius = log10.(radii_original[1]) .+ offset
+    first_radius_closed = vcat(first_radius, first(first_radius))
+
+    p = plot(
+        θ,
+        first_radius_closed;
+        proj = :polar,
+        ms = 3,
+        marker = :circle,
+        color = colors[1],
+        fill = (0, 0.0),
+        xaxis = false,
+        yticks = (tick_positions, tick_labels),
+        ylims = (0, maximum(tick_positions) + 0.4),
+        ytickfont=14,
+        margin = 5mm,
+        minorgrid = true,
+        rightmargin = 20mm,
+        label = labels[1],
+        xgridlinewidth = 0.0,
+        ygridlinewidth = 1.0,
+        gridcolor = "black",
+        fontsize=4,
+        size = (620,720)
+    )
+
+    # Add every additional solution to the same spider plot
+    for i in 2:length(solutions)
+        radius = log10.(radii_original[i]) .+ offset
+        radius_closed = vcat(radius, first(radius))
+
+        plot!(
+            p,
+            θ,
+            radius_closed;
+            ms = 3,
+            marker = :circle,
+            color = colors[mod1(i, length(colors))],
+            fill = (0, 0.0),
+            label = labels[i],
+            legend = :topright,
+            legend_title = L"$F_\mathrm{GHZ},\ R_\mathrm{GHZ}$"
+        )
+    end
+
+    # Parameter labels
+    z = 1.15 .* exp.(im .* 2π .* (0:n-1) ./ n)
+
+    annotate!(
+        p,
+        real.(z),
+        imag.(z),
+        text.(params, 14, "Computer Modern"),
+    )
+
+    display(p)
+
+    return p
+end
+
+sorted_pareto_df = sort(pareto_df, :p_mem)
+
+selected_solutions = sorted_pareto_df[1:3, :]
+
+labels = [
+    "$(round(row.mean_GHZfidel; digits=4)), $(round(1.0 / row.mean_generation_time; digits=2))"*L"\,\mathrm{Hz}"
+    for row in eachrow(selected_solutions)
+]
+
+p = spiderplot(
+    collect(eachrow(selected_solutions))...;
+    labels = labels
+)
+
+savefig("IF_Steane_pmem2.pdf")
+
+##
+@load "pareto_df_pmem<0.1.jld2" pareto_df
+##
+
+transform!(
+    pareto_df,
+    [:mean_generation_time, :mean_GHZfidel] =>
+        ByRow((gen_time, F_GHZ) ->
+            extract_pL(gen_time, F_GHZ; nsamples=100_000)
+        ) =>
+        AsTable
+)
+##
+sorted_pareto_df = sort(pareto_df, :p_mem)[1:3, :]
+perf_columns = [:generator_idx, :mean_GHZfidel, :std_GHZfidel, :mean_generation_time, :std_generation_time]
+df_out[!, :mean_generation_time] = df_out.mean_generation_time * 2
+using PrettyTables
+pretty_table(sorted_pareto_df[:, [perf_columns...; axis_order...;[:pL, :p_mem]]]; backend = :latex)
+##
+function dominates(a, b, objectives)
+    all(
+        better_or_equal(a[col], b[col], sense)
+        for (col, sense) in objectives
+    ) &&
+    any(
+        strictly_better(a[col], b[col], sense)
+        for (col, sense) in objectives
+    )
+end
+
+for i in 1:nrow(pareto_df)
+    for j in 1:nrow(pareto_df)
+        i == j && continue
+
+        if dominates(pareto_df[j, :], pareto_df[i, :], objectives)
+            println("Row $i is dominated by row $j")
+        end
+    end
+end

@@ -15,7 +15,7 @@ seed = 1234
 
 code = length(ARGS) >= 1 ? ARGS[1] : "Steane7"
 error_model = length(ARGS) >= 2 ? ARGS[2] : "depolarizing"
-target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 3000
+target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 12000
 global_idx = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 1
 output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
 
@@ -106,7 +106,6 @@ end
     clientslot_idcs = [client_msg.tag[3] for client_msg in clientslot_idcs_msgs]
     @debug "SWICH SLOT INDICES: $([msg.slot.idx for msg in msgs]), CLIENT SLOT INDICES: $clientslot_idcs"
     
-
     # zip can truncate: If clientslot_idcs has length 3 or 5 because a SwitchSlotInfo tag is missing or duplicated, zip silently truncates. That could produce a smaller/wrong GHZ fidelity calculation without immediately failing.
     @assert length(clientslot_idcs_msgs) == length(msgs)
     @assert length(clientslot_idcs) == length(msgs)
@@ -145,9 +144,9 @@ end
     unlock(pm_slot)
 
     # we can do  some logging here if we want to track consumption times etc.
-    push!(log_data, (
+    !iscutoff && push!(log_data, (
         time_of_consumption,
-        iscutoff ? 0 : gen_set_index,
+        gen_set_index,
         fidelity,
     ))
 end
@@ -212,11 +211,11 @@ end
         global_pause[] = now(sim) + length(msgs) * Δt_rotation_shuttle
 
         for msg in msgs
+            clientslot_idx = msg.tag[3]
+            tagid = tag!(msg.slot, Tag(SwitchSlotInfo, msg.slot.idx, clientslot_idx, now(sim))) # mark time of creation
             @yield timeout(sim, Δt_rotation_shuttle) # this is the physical switch pause for accepting/rotating/shuttling this batch
             # get corresponding slot idx at client
-            clientslot_idx = msg.tag[3]
             # tag with switch slot info
-            tagid = tag!(msg.slot, Tag(SwitchSlotInfo, msg.slot.idx, clientslot_idx, now(sim)))
             @yield @process SwitchSlotProt(sim, net, msg.slot.idx, clientslot_idx, Int(tagid), attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, log_data)
             @yield @process CutoffDiscardProt(sim, net, cutoff, log_data, Δt_readout, readout_fidelity)
         end
@@ -493,13 +492,13 @@ end
 
 function run_sweep(F_link, link_success_prob)
 
-    attempt_time = parameter_combinations[global_idx][1]
-    T_coherence = parameter_combinations[global_idx][2]
-    Δt_CNOTgate = parameter_combinations[global_idx][3]
-    gate_fidelity = parameter_combinations[global_idx][4]
-    Δt_readout = parameter_combinations[global_idx][5]
-    readout_fidelity = parameter_combinations[global_idx][6]
-    Δt_rotation_shuttle = parameter_combinations[global_idx][7]
+    attempt_time = 10e-6 # parameter_combinations[global_idx][1]
+    T_coherence = 1.0 # parameter_combinations[global_idx][2]
+    Δt_CNOTgate = 100e-6 # parameter_combinations[global_idx][3]
+    gate_fidelity = 0.9997 # parameter_combinations[global_idx][4]
+    Δt_readout = 1e-3 # parameter_combinations[global_idx][5]
+    readout_fidelity = 1.0 # parameter_combinations[global_idx][6]
+    Δt_rotation_shuttle = 100e-6 # parameter_combinations[global_idx][7]
 
     @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_readout=$(Δt_readout), readout_fidelity=$(readout_fidelity)"
 
@@ -576,7 +575,7 @@ function run_sweep(F_link, link_success_prob)
 
         push!(dataframes, logs)
 
-        @info "cutoff: $cutoff, runtime: $runtime, wallclock_time: $t_wallclock, nlogs: $(size(logs, 1))"
+        @info "cutoff: $cutoff, runtime: $runtime, wallclock_time: $t_wallclock"
     end
     df = vcat(dataframes...)
     return df
@@ -585,8 +584,8 @@ end
 ##
 
 dfs = DataFrame[]
-for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
-    for F_link in [1.0 - 2.5^(-x) for x in 3.0:10.0] # 8
+for link_success_prob in [1e-4]#[[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
+    for F_link in [0.97]#[1.0 - 2.5^(-x) for x in 3.0:10.0] # 8
         df = run_sweep(F_link, link_success_prob)
         push!(dfs, df)
         @info "Completed sweep for F_link=$(F_link), link_success_prob=$(link_success_prob)"
@@ -594,4 +593,4 @@ for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
 end
 df_out = vcat(dfs...)
 
-@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df_out
+@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_current.jld2" df_out #$(global_idx)

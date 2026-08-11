@@ -100,7 +100,7 @@ function make_decoder_figure(phys_errors, results; title="", labels=String[])
     CairoMakie.Legend(f[1, 2], a, "Legend")
     return f
 end
-
+##
 # ---------------------------------------------------------------------
 # Noise helpers
 # ---------------------------------------------------------------------
@@ -279,7 +279,7 @@ end
 # Run experiment
 # ---------------------------------------------------------------------
 
-code = BB12_2_3
+code = Steane7()
 decoder = TableDecoder(code)
 
 phys_errors = 10 .^ range(-3, 0, length = 20)
@@ -403,7 +403,9 @@ logical_errors, threshold_ratio = run_mem_vs_ghz_sweep(
     metric = :max,
 )
 ##
-
+using DataFrames
+using CSV
+using JLD2
 code_name = "Steane7"
 df = DataFrame(
     mem_noise = repeat(mem_grid, outer = length(ghz_grid)),
@@ -472,7 +474,7 @@ function make_threshold_heatmap(code_name, mem_grid, ghz_grid, threshold_ratio;
             x_grid,
             infidelity_grid,
             heat_values,
-            colormap = Reverse(:RdYlGn_11),
+            colormap = :RdYlGn_11,
             colorrange = (-maximum(abs.(heat_values)), maximum(abs.(heat_values))),
         )
 

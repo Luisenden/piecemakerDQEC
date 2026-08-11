@@ -22,68 +22,56 @@ default(
 
 ##
 
-@load "summary_ghz_service_v1_Steane7_depolarizing_CURRENT.jld2" df_out
-##
-df_nocutoff = df_out[df_out.cutoff .== Inf, :]
-combined_logs = combine(groupby(df_nocutoff, [:generator_idx, :link_success_prob]),
-:mean_generation_time => (x -> mean(x)) => :mean_mean_generation_time,
-:sem_generation_time => (x -> mean(x)) => :sem_mean_generation_time
-)
+@load "summary_ghz_service_v1_Steane7_depolarizing_current.jld2" df_out
 
-@df combined_logs scatter(:link_success_prob, :mean_mean_generation_time,
-    group = :generator_idx,
-    yerr = :sem_mean_generation_time,
-    xlabel = L"p_{\mathrm{link}}", 
-    ylabel = L"\mathrm{Mean\ Generation\ Time\ (s)}", 
-    xscale = :log10,
-    markershape = :utriangle,
-    minorgrid = true,
-    markersize = 4,
+##
+df_out[!, :mean_generation_time] = df_out.mean_generation_time * 2
+using PrettyTables
+pretty_table(df_out[:,[:generator_idx, :mean_GHZfidel, :std_GHZfidel, :mean_generation_time, :std_generation_time, :cutoff]]; backend = :latex, formatters = [fmt__round(4)])
+##
+df_out_current = df_out[ df_out.generator_idx .> 0, :]
+
+
+##
+n_cutoffs = length(unique(round.(df_out_current.cutoff; digits=2)))
+group_shapes = reshape([:circle, :rect, :utriangle, :diamond, :star5, :hexagon, :dtriangle, :pentagon][1:n_cutoffs], 1, :)
+
+p1 = @df df_out_current groupbar(:generator_idx, :mean_GHZfidel,
+    group = round.(:cutoff; digits=2),
+    xlabel = "",
+    ylabel = L"Mean GHZ Fidelity $\overline{F}_{\mathrm{GHZ}}$",
+    legendtitle = L" $t_{\mathrm{cut}}$ (s)",
     alpha = 0.8,
+    ylim = (0.8, 0.9),
+    yerror = :sem_GHZfidel,
+    xticks = (sort(unique(df_out_current.generator_idx)), fill("", length(unique(df_out_current.generator_idx)))),
+    xminorgrid = false,
+    markershape = group_shapes,
+    legend = :bottomright
 )
 
-##
-combined_logs = combine(groupby(combined_logs, [:link_success_prob]),
-:mean_mean_generation_time => (x -> mean(abs.(diff(x)))/mean(x)) => :mean_absdiff,
-:mean_mean_generation_time => (x -> std(abs.(diff(x)))/mean(x)) => :std_absdiff,
-)
-savefig("mean_generation_time.pdf")
-##
-@df combined_logs scatter(:link_success_prob, :mean_absdiff,
-    xlabel = L"p_{\mathrm{link}}", 
-    ylabel = "Relative Mean Difference", 
-    xscale = :log10,
-    yscale = :log10,
-    yerror = :std_absdiff,  # Assuming you have a column for error bars
-    markershape = :utriangle,
-    minorgrid = true,
-    markersize = 4,
+p2 = @df df_out_current scatter(:generator_idx, :mean_generation_time,
+    group = round.(:cutoff; digits=2),
+    xlabel = "Stabilizer generator",
+    ylabel = L"Mean inter-completion time $\overline{\Delta t}_{\mathrm{GHZ}}$ (s)",
     alpha = 0.8,
-    label = nothing
+    ylim = (0,0.2),
+    yerror = :sem_generation_time,
+    xticks = (sort(unique(df_out_current.generator_idx)), [L"G_%$i" for i in sort(unique(df_out_current.generator_idx))]),
+    xminorgrid = false,
+    markershape = group_shapes,
+    legend=false
 )
 
-savefig("mean_generation_time_variability.pdf")
-##s
-df_out_nocutoff = df_out[df_out.cutoff .== Inf, :]
-@df df_out_nocutoff histogram(:mean_GHZfidel, 
-    group = :stabilizers,
-    xlabel = L"\mathrm{Mean\ GHZ\ Fidelity}",
-    ylabel = "Count",
+plot(p1, p2, layout = (2, 1), size = (400, 800),
+    left_margin = 8Plots.mm,
+    right_margin = 8Plots.mm,
+    bottom_margin = 6Plots.mm,
+    top_margin = 4Plots.mm,
 )
 
-##
-@df df_out_nocutoff scatter(:link_success_prob, :mean_GHZfidel, 
-    markerstyle = :stabilizers,
-    group = :F_link, 
-    xlabel = L"p_{\mathrm{link}}", 
-    ylabel = L"\mathrm{Mean\ GHZ\ Fidelity}", 
-    xscale = :log10,
-    title = "No Cutoff (cutoff=∞)",
-    legendtitle = L"F_{Bell}",
-    markershape = :circle,
-    markersize = 4,
-    alpha = 0.8,
-)
+savefig("mean_GHZfidelity_generation_time.pdf")
+
 ##
 
 # 1) Count rows per unique clients_serviced group
