@@ -22,7 +22,7 @@ default(
 
 ##
 
-@load "summary_ghz_service_v1_Steane7_depolarizing_current.jld2" df_out
+@load "summary_ghz_service_v1_Steane7_depolarizing_current_adapted.jld2" df_out
 
 ##
 df_out[!, :mean_generation_time] = df_out.mean_generation_time * 2

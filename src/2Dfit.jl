@@ -11,6 +11,7 @@ function fit_2d_log_surface(
     y = Float64[]
     z = Float64[]
 
+
     for (imem, p_mem) in pairs(mem_errors)
         for (ighz, p_ghz) in pairs(ghz_infidelities)
 
@@ -60,7 +61,12 @@ end
 
 ##
 
-pL = results_heatmap[1, :, :, 1]
+pL_X = results_heatmap[1, :, :, 1]
+pL_Z = results_heatmap[1, :, :, 2]
+
+# Conservative logical error probability
+pL = max.(pL_X, pL_Z)
+
 
 β, pL_fit = fit_2d_log_surface(
     mem_errors,

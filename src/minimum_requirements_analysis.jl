@@ -6,7 +6,6 @@ using StatsPlots
 include("utils_pseudothreshold.jl")
 
 using Logging
-
 ##
 function extract_pL(gen_time, F_GHZ; nsamples=100_000)
     p_mem_val = p_mem(gen_time * 2)  # generation time per stabilizer generator takes twice as long
@@ -57,7 +56,7 @@ count = 0
 
 res = pL_fit.(p_mem.(df.mean_generation_time .* 2), 1.0 .- df.mean_GHZfidel) #extract_pL.(df.mean_generation_time .* 2, df.mean_GHZfidel; nsamples=100_000)
 ##
-df_both_targets = df[res .<= p_mem.(df.mean_generation_time .* 2) .* 0.85 , :]
+df_both_targets = df[res .<= p_mem.(df.mean_generation_time .* 2), :]
 #@save "df_both_targets_pmem.jld2" df_both_targets
 ##
 # @load "df_both_targets_pmem.jld2" df_both_targets
@@ -266,7 +265,7 @@ gr()
 
 
 baseline_values = (
-    readout_fidelity  = 0.999,
+    readout_fidelity  = 0.9999,
     tReadout          = 0.001,
     gate_fidelity     = 0.9997,
     tCNOT             = 100e-6,
@@ -335,6 +334,21 @@ function improvement_factors(dom_solution_values)
 end
 
 ##
+
+sweep_max_values = (
+    readout_fidelity   = 0.99999,   # 1.0 would give Inf
+    tReadout           = 0.1e-3,
+    gate_fidelity      = 0.99999,
+    tCNOT              = 1e-6,
+    tRotationShuttle   = 10e-6,
+    attempt_time       = 1e-6,
+    link_success_prob  = 0.5,
+    T_coherence        = 20.0,
+    F_link             = 1 - 2.5^(-10),
+)
+
+
+
 axis_order = [
     :gate_fidelity,
     :tReadout,
@@ -364,6 +378,8 @@ params = [
 function spiderplot(
     solutions...;
     labels = nothing,
+    reference_solution = nothing,
+    reference_label = "sweep maximum",
     colors = [
         :blue,
         :red,
@@ -379,6 +395,7 @@ function spiderplot(
         throw(ArgumentError("Provide at least one solution."))
 
     # Calculate improvement factors for every solution
+    @info "Calculating improvement factors for $solutions..."
     factors = improvement_factors.(solutions)
 
     # Extract values in exactly the same order for every solution
@@ -388,7 +405,16 @@ function spiderplot(
     ]
 
     # Use all plotted solutions to determine one common radial scale
+    reference_radius = if reference_solution === nothing
+        nothing
+    else
+        ref_factors = improvement_factors(reference_solution)
+        Float64[ref_factors[key] for key in axis_order]
+    end
     all_radii = reduce(vcat, radii_original)
+    if reference_radius !== nothing
+        all_radii = vcat(all_radii, reference_radius)
+    end
 
     n = length(axis_order)
     θ = collect(range(0, 2π; length = n + 1))
@@ -445,16 +471,17 @@ function spiderplot(
         xaxis = false,
         yticks = (tick_positions, tick_labels),
         ylims = (0, maximum(tick_positions) + 0.4),
-        ytickfont=14,
+        ytickfont=12,
         margin = 5mm,
         minorgrid = true,
-        rightmargin = 20mm,
+        rightmargin = 5mm,
         label = labels[1],
         xgridlinewidth = 0.0,
         ygridlinewidth = 1.0,
         gridcolor = "black",
-        fontsize=4,
-        size = (620,720)
+        fontsize=10,
+        size = (700,720),
+        legendfontsize = 10,
     )
 
     # Add every additional solution to the same spider plot
@@ -471,30 +498,60 @@ function spiderplot(
             color = colors[mod1(i, length(colors))],
             fill = (0, 0.0),
             label = labels[i],
-            legend = :topright,
+            legend = :outertopright,
+            rightmargin = 5mm,
             legend_title = L"$F_\mathrm{GHZ},\ R_\mathrm{GHZ}$"
+        )
+    end
+    if reference_radius !== nothing
+    radius = log10.(reference_radius) .+ offset
+    radius_closed = vcat(radius, first(radius))
+
+    plot!(
+            p,
+            θ,
+            radius_closed;
+            linewidth = 1.5,
+            linestyle = :dash,
+            marker = :diamond,
+            markersize = 0,
+            color = :grey,
+            fill = (0, 0.0),
+            label = reference_label,
         )
     end
 
     # Parameter labels
-    z = 1.15 .* exp.(im .* 2π .* (0:n-1) ./ n)
+    angles = 2π .* (0:n-1) ./ n
+    z = 1.1 .* exp.(im .* angles)
 
-    annotate!(
-        p,
-        real.(z),
-        imag.(z),
-        text.(params, 14, "Computer Modern"),
-    )
+    for (i, label) in enumerate(params)
+        x = real(z[i])
+        y = imag(z[i])
+
+        # Make text extend away from the spider plot
+        halign =
+            x > 0.1  ? :left :
+            x < -0.1 ? :right :
+                    :center
+
+        annotate!(
+            p,
+            x,
+            y,
+            text(label, 14, "Computer Modern", halign),
+        )
+    end
 
     display(p)
 
     return p
 end
 
-sorted_pareto_df = sort(pareto_df, :p_mem)
+# sorted_pareto_df = sort(pareto_df, :p_mem)
 
-selected_solutions = sorted_pareto_df[1:3, :]
-
+# selected_solutions = sorted_pareto_df[end-5:end-3, :]
+selected_solutions = sort(pareto_df, :pL)[1:5, :]
 labels = [
     "$(round(row.mean_GHZfidel; digits=4)), $(round(1.0 / row.mean_generation_time; digits=2))"*L"\,\mathrm{Hz}"
     for row in eachrow(selected_solutions)
@@ -502,10 +559,12 @@ labels = [
 
 p = spiderplot(
     collect(eachrow(selected_solutions))...;
-    labels = labels
+    labels = labels,
+    reference_solution = sweep_max_values,
+    reference_label = "range maximum",
 )
 
-savefig("IF_Steane_pmem2.pdf")
+savefig("IF_Steane_pmemT1s.pdf")
 
 ##
 @load "pareto_df_pmem<0.1.jld2" pareto_df
@@ -520,7 +579,7 @@ transform!(
         AsTable
 )
 ##
-sorted_pareto_df = sort(pareto_df, :p_mem)[1:3, :]
+sorted_pareto_df = sort(pareto_df, :pL)[1:5, :]
 perf_columns = [:generator_idx, :mean_GHZfidel, :std_GHZfidel, :mean_generation_time, :std_generation_time]
 df_out[!, :mean_generation_time] = df_out.mean_generation_time * 2
 using PrettyTables

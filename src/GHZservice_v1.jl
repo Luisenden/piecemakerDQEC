@@ -1,6 +1,7 @@
 using QuantumSavory
 using QuantumSavory: Register, X, Z, Y, CNOT
 using QuantumSavory.ProtocolZoo
+using QuantumSavory.StatesZoo: DepolarizedBellPair
 using QuantumClifford
 using ConcurrentSim
 using ResumableFunctions
@@ -10,12 +11,12 @@ using Statistics
 using JLD2
 using DataFrames
 using Random
-
+##
 seed = 1234
 
 code = length(ARGS) >= 1 ? ARGS[1] : "Steane7"
 error_model = length(ARGS) >= 2 ? ARGS[2] : "depolarizing"
-target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 12000
+target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 3000
 global_idx = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 1
 output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
 
@@ -154,21 +155,46 @@ end
 
 function drain_entanglement_msgs!(net)
     msgs = Any[]
+
     while true
         msg = querydelete!(
             net[1],
             EntanglementCounterpart,
             ❓,
+            ❓,
             ❓;
             assigned = true,
             filo = false,
         )
+
         isnothing(msg) && break
+
+        remote_node = msg.tag[2]
+        remote_slot = msg.tag[3]
+        pair_id = msg.tag[4]
+
+        reciprocal_msg = querydelete!(
+            net[remote_node][remote_slot],
+            EntanglementCounterpart,
+            1,
+            msg.slot.idx,
+            pair_id;
+            filo = false,
+        )
+
+        @assert !isnothing(reciprocal_msg) """
+        Missing reciprocal EntanglementCounterpart:
+        switch slot = $(msg.slot.idx)
+        client node = $(remote_node)
+        client slot = $(remote_slot)
+        pair_id = $(pair_id)
+        """
+
         push!(msgs, msg)
     end
+
     return msgs
 end
-
 
 @resumable function discard_bell_msgs(sim, net, msgs, pause_until)
     
@@ -242,7 +268,7 @@ end
     worker_running = Ref(false)
 
     while true
-        @yield onchange_tag(net[1])
+        @yield onchange(net[1], Tag)
 
         msgs = drain_entanglement_msgs!(net)
         isempty(msgs) && continue
@@ -394,19 +420,32 @@ end
     @debug "Fused client $(clientswitch_slot.idx) with first client $(piecemaker_slot.idx)"
 end
 
-
-@resumable function naive_entangler(sim, net, n, F_link, link_success_prob, attempt_t, Δt_rotation_shuttle)
+@resumable function naive_entangler(
+    sim,
+    net,
+    n,
+    F_link,
+    link_success_prob,
+    attempt_t,
+    Δt_rotation_shuttle,
+)
     for i in 1:n
-        # Entangler for generation of bell pairs
         entangler = EntanglerProt(
-            sim=sim, net=net, nodeA=1, chooseA=i,
-            nodeB=1+i, chooseB=1,
-            pairstate=noisy_bell_state(F_link),
-            success_prob = link_success_prob, 
-            rounds = -1, 
-            attempts = -1, 
+            sim = sim,
+            net = net,
+            nodeA = 1,
+            nodeB = 1 + i,
+
+            chooseslotA = i,
+            chooseslotB = 1,
+
+            pairstate = DepolarizedBellPair(; F = F_link),
+
+            success_prob = link_success_prob,
+            rounds = -1,
+            attempts = -1,
             attempt_time = attempt_t,
-            retry_lock_time = nothing# max(attempt_t, Δt_rotation_shuttle) #nothing
+            retry_lock_time = nothing,
         )
 
         @process entangler()
@@ -453,7 +492,7 @@ end
 
 # setup parameters varied 
 attempt_times = [1e-6, 1e-5, 1e-4] # 3
-T_coherences = [2.0, 1.0, 0.1, 0.01] # 4
+T_coherences = [10.0, 20.0] # 3
 CNOTgate_times = [100e-6, 10e-6, 1e-6] # 3
 CNOTgate_fidelities = [0.9995, 0.9997, 0.9999, 0.99999] # 4
 readout_times = [2e-3, 1e-3, 1e-4] # 3
@@ -492,13 +531,13 @@ end
 
 function run_sweep(F_link, link_success_prob)
 
-    attempt_time = 10e-6 # parameter_combinations[global_idx][1]
-    T_coherence = 1.0 # parameter_combinations[global_idx][2]
-    Δt_CNOTgate = 100e-6 # parameter_combinations[global_idx][3]
-    gate_fidelity = 0.9997 # parameter_combinations[global_idx][4]
-    Δt_readout = 1e-3 # parameter_combinations[global_idx][5]
-    readout_fidelity = 1.0 # parameter_combinations[global_idx][6]
-    Δt_rotation_shuttle = 100e-6 # parameter_combinations[global_idx][7]
+    attempt_time =  parameter_combinations[global_idx][1] #10e-6 #
+    T_coherence =  parameter_combinations[global_idx][2] # 1.0 #
+    Δt_CNOTgate =  parameter_combinations[global_idx][3] #100e-6 #
+    gate_fidelity =  parameter_combinations[global_idx][4] #0.9997 #
+    Δt_readout =  parameter_combinations[global_idx][5] #1e-3 #
+    readout_fidelity =  parameter_combinations[global_idx][6] #0.9999 #
+    Δt_rotation_shuttle =  parameter_combinations[global_idx][7] #100e-6 #
 
     @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_readout=$(Δt_readout), readout_fidelity=$(readout_fidelity)"
 
@@ -584,8 +623,8 @@ end
 ##
 
 dfs = DataFrame[]
-for link_success_prob in [1e-4]#[[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
-    for F_link in [0.97]#[1.0 - 2.5^(-x) for x in 3.0:10.0] # 8
+for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
+    for F_link in [1.0 - 2.5^(-x) for x in 3.0:12.0] # 8
         df = run_sweep(F_link, link_success_prob)
         push!(dfs, df)
         @info "Completed sweep for F_link=$(F_link), link_success_prob=$(link_success_prob)"
@@ -593,4 +632,4 @@ for link_success_prob in [1e-4]#[[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
 end
 df_out = vcat(dfs...)
 
-@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_current.jld2" df_out #$(global_idx)
+@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df_out #$(global_idx)

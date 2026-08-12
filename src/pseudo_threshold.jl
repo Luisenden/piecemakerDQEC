@@ -84,10 +84,6 @@ function applynoise!(
 
     return frame
 end
-
-error_rate_to_time(p, τ) = -τ * log1p(-4p/3)
-time_to_error_rate(t, τ) = 3/4 * (1 - exp(-t/τ))
-rate_to_error_rate(r, τ) = 3/4 * (1 - exp(-1/(r * τ)))
 ##
 # find the source code for the ShorSyndromeECCSetup struct in the QuantumClifford.ECC module https://raw.githubusercontent.com/QuantumSavory/QuantumClifford.jl/master/src/ecc/decoder_pipeline.jl
 using QuantumClifford.ECC: AbstractECCSetup, AbstractSyndromeDecoder
@@ -281,15 +277,6 @@ function cevaluate_decoder(
 
     return X_error, Z_error
 end
-##
-
-
-code = Steane7()
-setup = CShorSyndromeECCSetup(0.5, 1.0, 1.0)
-decoder = TableDecoder(code)
-r = cevaluate_decoder(decoder, setup, 100_000)
-
-
 
 ## EVALUATION AND PLOTTING
 function make_decoder_figure(
@@ -459,7 +446,7 @@ xaxis = :error)  # 100 ms
 # 2D sweep: memory error × GHZ fidelity
 # ---------------------------------------------------------------------
 
-F_gate =1.0
+F_gate = 1.0
 mem_errors = 10 .^ range(-4, -1, length=20)
 
 fidelities = [
