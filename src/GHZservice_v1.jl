@@ -527,7 +527,7 @@ CNOTgate_times = [1e-6, 10e-6, 100e-6, 250e-6]
 CNOTgate_fidelities = [0.999, 0.9995, 0.9997, 0.9999, 0.99999] 
 readout_times = [0.1e-3, 1e-3, 2e-3]
 readout_fidelities = [0.999, 0.9999, 1.0] 
-rotation_shuttle_times = [10e-6, 50e-6, 100e-6] 
+rotation_shuttle_times = [10e-6, 50e-6, 100e-6]
 
 # all combinations of parameters
 parameter_combinations = [
@@ -586,7 +586,7 @@ function run_sweep(F_link, link_success_prob)
         Δt_readout=Δt_readout,
         Δt_rotation_shuttle=Δt_rotation_shuttle
     )
-    for cutoff in [get_cutoff(T_coherence, 0.05), Inf, get_cutoff(T_coherence, 0.1)] # 3
+    for cutoff in [get_cutoff(T_coherence, 0.1), Inf, get_cutoff(T_coherence, 0.25)] # 3
         Random.seed!(seed)
 
         empty!(log_data)
