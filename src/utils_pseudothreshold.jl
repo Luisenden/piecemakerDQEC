@@ -277,3 +277,75 @@ function cevaluate_decoder(
 
     return X_error, Z_error
 end
+
+function cevaluate_decoder_pL(
+    d::AbstractSyndromeDecoder,
+    setup::AbstractECCSetup,
+    nsamples::Int,
+)
+    H = parity_checks(d)
+    n = code_n(H)
+    O = faults_matrix(H)
+
+     
+    fmtab = QuantumClifford.Tableau( # this is from CommutationCheckECCSetup
+        O[:, end÷2+1:end],
+        O[:, 1:end÷2],
+    )
+
+    physical_noisy_circ, syndrome_bits, n_anc = # this is new
+        physical_ECC_circuit(H, setup)
+
+
+    n_total_qubits = n + n_anc
+    n_total_bits = last(syndrome_bits)
+
+    frames = PauliFrame(
+        nsamples,
+        n_total_qubits,
+        n_total_bits,
+    )
+
+    fill!(QuantumClifford.tab(frames).xzs, 0) # physical error = I
+
+    pftrajectories(
+        frames,
+        physical_noisy_circ,
+    )
+
+    syndromes = @view measurements(frames)[:, syndrome_bits]
+
+    n_logical_faults = size(O, 1)
+
+    measured_faults = zeros(UInt8, nsamples, n_logical_faults)
+    frame_tableau = QuantumClifford.tab(frames) # frame to tableau representation
+
+    for i in 1:nsamples
+
+        err_i = frame_tableau[i][1:n]
+ 
+        # analogous to CommutationCheckECCSetup
+        QuantumClifford.comm!(
+            @view(measured_faults[i, :]),
+            fmtab,
+            err_i,
+        )
+    end
+
+    measured_faults .%= 2
+
+    guesses =
+        QuantumClifford.ECC.batchdecode(
+            d,
+            syndromes,
+        )
+
+    pL =
+        QuantumClifford.ECC.evaluate_guesses(
+            measured_faults,
+            guesses,
+            O,
+        )
+
+    return pL
+end

@@ -10,33 +10,36 @@ using Logging
 function extract_pL(gen_time, F_GHZ; nsamples=100_000)
     p_mem_val = p_mem(gen_time * 2)  # generation time per stabilizer generator takes twice as long
 
-    setup = CShorSyndromeECCSetup(p_mem_val, 1.0, F_GHZ)
+    setup = CShorSyndromeECCSetup(p_mem_val, 0.9995, F_GHZ)
     decoder = TableDecoder(code)
 
-    r = cevaluate_decoder(decoder, setup, nsamples)
+    r = cevaluate_decoder_pL(decoder, setup, nsamples)
 
     return (
-        pL = maximum(r),
+        pL = r,
         p_mem = p_mem_val,
     )
 end
 ##
 
-folder = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1"
-files = readdir(folder)
+folder1 = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1"
+folder2 = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_T"
 ##
 columns =  [:attempt_time, :T_coherence, :error_model, :tRotationShuttle, :tCNOT, :gate_fidelity, 
             :tReadout, :readout_fidelity, :runtime, :wallclock_time, :nlogs]
 
 dfs = DataFrame[]
 df_out = nothing
-for file in files
-    path = joinpath(folder, file)
-    try
-        @load path df_out
-    catch
+for folder in [folder1, folder2]
+    files = readdir(folder)
+    for file in files
+        path = joinpath(folder, file)
+        try
+            @load path df_out
+        catch
+        end
+        !isnothing(df_out) && push!(dfs, df_out)
     end
-    !isnothing(df_out) && push!(dfs, df_out)
 end
 df = vcat(dfs...)
 
@@ -45,7 +48,7 @@ df = df[df.generator_idx .== 1, :]
 #df = df[df.cutoff .== Inf, :]
 
 ##
-T_coh = 1.0
+T_coh = 10.0
 p_mem(Δt_GHZ) = (3/4) * (1 - exp(-Δt_GHZ / T_coh))
 #df = df[p_mem.(df.mean_generation_time .* 2) .<= 0.1, :]
 
@@ -58,8 +61,7 @@ res = pL_fit.(p_mem.(df.mean_generation_time .* 2), 1.0 .- df.mean_GHZfidel) #ex
 ##
 df_both_targets = df[res .<= p_mem.(df.mean_generation_time .* 2), :]
 #@save "df_both_targets_pmem.jld2" df_both_targets
-##
-# @load "df_both_targets_pmem.jld2" df_both_targets
+
 ## pareto front analysis (this can take several minutes)
 
 objectives = [
@@ -124,8 +126,15 @@ function pareto_front(df, objectives)
 end
 
 pareto_df = pareto_front(df_both_targets, objectives)
-##
-#@load "pareto_df_pmem.jld2" pareto_df
+## add simulated logical error probability to pareto_df
+transform!(
+    pareto_df,
+    [:mean_generation_time, :mean_GHZfidel] =>
+        ByRow((gen_time, F_GHZ) ->
+            extract_pL(gen_time, F_GHZ; nsamples=1000_000)
+        ) =>
+        AsTable
+)
 
 ##
 using DataFrames, Plots, Printf, LaTeXStrings
@@ -244,19 +253,8 @@ plot_value_counts_many(
 
 savefig("minimum_requirements_analysis_pmem.pdf")
 
-##
-best_row = pareto_df[1, :]
-# best_row_rate = pareto_df[argmin(pareto_df.mean_generation_time), :]
 
 
-GHZ_fidelity = 0.0626556
-p_mem_val = p_mem(49.4259*2)
-setup = CShorSyndromeECCSetup(p_mem_val, 1.0, GHZ_fidelity)
-decoder = TableDecoder(code)
-r = cevaluate_decoder(decoder, setup, 10_000)
-
-@info r
-@info p_mem_val
 
 ##
 
@@ -560,27 +558,16 @@ labels = [
 p = spiderplot(
     collect(eachrow(selected_solutions))...;
     labels = labels,
-    reference_solution = sweep_max_values,
+    reference_solution = nothing,#sweep_max_values,
     reference_label = "range maximum",
 )
 
 savefig("IF_Steane_pmemT1s.pdf")
 
-##
-@load "pareto_df_pmem<0.1.jld2" pareto_df
-##
 
-transform!(
-    pareto_df,
-    [:mean_generation_time, :mean_GHZfidel] =>
-        ByRow((gen_time, F_GHZ) ->
-            extract_pL(gen_time, F_GHZ; nsamples=100_000)
-        ) =>
-        AsTable
-)
 ##
 sorted_pareto_df = sort(pareto_df, :pL)[1:5, :]
-perf_columns = [:generator_idx, :mean_GHZfidel, :std_GHZfidel, :mean_generation_time, :std_generation_time]
+perf_columns = [:generator_idx, :mean_GHZfidel, :mean_generation_time,]
 df_out[!, :mean_generation_time] = df_out.mean_generation_time * 2
 using PrettyTables
 pretty_table(sorted_pareto_df[:, [perf_columns...; axis_order...;[:pL, :p_mem]]]; backend = :latex)

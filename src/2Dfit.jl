@@ -61,11 +61,9 @@ end
 
 ##
 
-pL_X = results_heatmap[1, :, :, 1]
-pL_Z = results_heatmap[1, :, :, 2]
 
 # Conservative logical error probability
-pL = max.(pL_X, pL_Z)
+pL = results_heatmap[1, :, :]
 
 
 β, pL_fit = fit_2d_log_surface(

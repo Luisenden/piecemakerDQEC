@@ -5,6 +5,21 @@ using StatsPlots
 using CSV
 using LaTeXStrings
 
+include("utils_pseudothreshold.jl")
+
+function extract_pL(gen_time, F_GHZ; nsamples=100_000)
+    p_mem_val = p_mem(gen_time * 2)  # generation time per stabilizer generator takes twice as long
+
+    setup = CShorSyndromeECCSetup(p_mem_val, 1.0, F_GHZ)
+    decoder = TableDecoder(code)
+
+    r = cevaluate_decoder_pL(decoder, setup, nsamples)
+
+    return (
+        pL = r,
+        p_mem = p_mem_val,
+    )
+end
 
 default(
     fontfamily = "Computer Modern",
@@ -24,10 +39,25 @@ default(
 
 @load "summary_ghz_service_v1_Steane7_depolarizing_current_adapted.jld2" df_out
 
+
+##
+transform!(
+    df_out,
+    [:mean_generation_time, :mean_GHZfidel] =>
+        ByRow((gen_time, F_GHZ) ->
+            extract_pL(gen_time, F_GHZ; nsamples=1000_000)
+        ) =>
+        AsTable
+)
+
 ##
 df_out[!, :mean_generation_time] = df_out.mean_generation_time * 2
 using PrettyTables
-pretty_table(df_out[:,[:generator_idx, :mean_GHZfidel, :std_GHZfidel, :mean_generation_time, :std_generation_time, :cutoff]]; backend = :latex, formatters = [fmt__round(4)])
+pretty_table(df_out[:,[:generator_idx, :mean_GHZfidel, :mean_generation_time, :cutoff, :pL, :p_mem]]; backend = :latex, formatters = [fmt__round(4)])
+
+##
+
+
 ##
 df_out_current = df_out[ df_out.generator_idx .> 0, :]
 

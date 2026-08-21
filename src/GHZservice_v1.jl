@@ -1,7 +1,6 @@
 using QuantumSavory
 using QuantumSavory: Register, X, Z, Y, CNOT
 using QuantumSavory.ProtocolZoo
-using QuantumSavory.StatesZoo: DepolarizedBellPair
 using QuantumClifford
 using ConcurrentSim
 using ResumableFunctions
@@ -21,27 +20,58 @@ global_idx = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 1
 output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
 
 const codes = Dict(
+
     "Steane7" => (7, [
         [1, 2, 3, 5],
         [1, 2, 4, 6],
         [2, 3, 4, 7],
     ]),
-    "BB12" => (12, [
-            # x-checks
-            [3, 4, 7, 8],
-            [1, 5, 8, 9],
-            [2, 6, 7, 9],
-            [1, 6, 10, 11],
-            [2, 4, 11, 12],
-            [3, 5, 10, 12],
-            # z-checks
-            [1, 3, 8, 10],
-            [1, 2, 9, 11],
-            [2, 3, 7, 12],
-            [4, 6, 7, 11],
-            [4, 5, 8, 12],
-            [5, 6, 9, 10],
-    ])# [[12,2,3]] code from Andersen-Greplová https://arxiv.org/pdf/2507.09690
+
+    "GB16_2_4" => (16, [
+        [1, 6, 9, 10],
+        [2, 7, 10, 11],
+        [3, 8, 11, 12],
+        [1, 4, 12, 13],
+        [2, 5, 13, 14],
+        [3, 6, 14, 15],
+        [4, 7, 15, 16],
+
+        [1, 8, 9, 12],
+        [1, 2, 10, 13],
+        [2, 3, 11, 14],
+        [3, 4, 12, 15],
+        [4, 5, 13, 16],
+        [5, 6, 9, 14],
+        [6, 7, 10, 15],
+    ]),
+
+    "GB26_2_5" => (26, [
+        [1, 4, 16, 18],
+        [2, 5, 17, 19],
+        [3, 6, 18, 20],
+        [4, 7, 19, 21],
+        [5, 8, 20, 22],
+        [6, 9, 21, 23],
+        [7, 10, 22, 24],
+        [8, 11, 23, 25],
+        [9, 12, 24, 26],
+        [10, 13, 14, 25],
+        [1, 11, 15, 26],
+        [2, 12, 14, 16],
+
+        [10, 12, 14, 25],
+        [11, 13, 15, 26],
+        [1, 12, 16, 26],
+        [2, 13, 14, 17],
+        [1, 3, 15, 18],
+        [2, 4, 16, 19],
+        [3, 5, 17, 20],
+        [4, 6, 18, 21],
+        [5, 7, 19, 22],
+        [6, 8, 20, 23],
+        [7, 9, 21, 24],
+        [8, 10, 22, 25],
+    ]),
 )
 
 const paulis = (nothing, X, Y, Z)
@@ -491,13 +521,13 @@ end
 ## run the simulation
 
 # setup parameters varied 
-attempt_times = [1e-6, 1e-5, 1e-4] # 3
-T_coherences = [10.0, 20.0] # 3
-CNOTgate_times = [100e-6, 10e-6, 1e-6] # 3
-CNOTgate_fidelities = [0.9995, 0.9997, 0.9999, 0.99999] # 4
-readout_times = [2e-3, 1e-3, 1e-4] # 3
-readout_fidelities = [0.999, 0.9999, 1.0] # 3
-rotation_shuttle_times = [100e-6, 50e-6, 10e-6] # 3
+attempt_times = [0.1e-6, 0.5e-6, 1e-6, 1e-5] 
+T_coherences = [0.01, 0.1, 1.0, 2.0, 10.0, 20.0] 
+CNOTgate_times = [1e-6, 10e-6, 100e-6, 250e-6] 
+CNOTgate_fidelities = [0.999, 0.9995, 0.9997, 0.9999, 0.99999] 
+readout_times = [0.1e-3, 1e-3, 2e-3]
+readout_fidelities = [0.999, 0.9999, 1.0] 
+rotation_shuttle_times = [10e-6, 50e-6, 100e-6] 
 
 # all combinations of parameters
 parameter_combinations = [
@@ -528,6 +558,9 @@ function estimate_runtime_for_samples(
     return (target_samples * t_sample)
 end
 
+function get_cutoff(T_coherence, error_budget)
+    return -T_coherence * log(1 - 4/3 * ( 1 - (1-error_budget)^0.25 ))
+end
 
 function run_sweep(F_link, link_success_prob)
 
@@ -553,7 +586,7 @@ function run_sweep(F_link, link_success_prob)
         Δt_readout=Δt_readout,
         Δt_rotation_shuttle=Δt_rotation_shuttle
     )
-    for cutoff in [Inf, runtime/target_samples*2, runtime/target_samples] # 3
+    for cutoff in [get_cutoff(T_coherence, 0.05), Inf, get_cutoff(T_coherence, 0.1)] # 3
         Random.seed!(seed)
 
         empty!(log_data)
@@ -623,8 +656,8 @@ end
 ##
 
 dfs = DataFrame[]
-for link_success_prob in [[0.5];[10.0^(-x) for x in 1.0:5.0]] # 6
-    for F_link in [1.0 - 2.5^(-x) for x in 3.0:12.0] # 8
+for link_success_prob in [10.0^(-x) for x in 1.0:5.0] 
+    for F_link in [1.0 - 2.5^(-x) for x in 3.0:10.0]
         df = run_sweep(F_link, link_success_prob)
         push!(dfs, df)
         @info "Completed sweep for F_link=$(F_link), link_success_prob=$(link_success_prob)"
