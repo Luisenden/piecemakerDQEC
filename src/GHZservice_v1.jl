@@ -586,7 +586,7 @@ function run_sweep(F_link, link_success_prob)
         Δt_readout=Δt_readout,
         Δt_rotation_shuttle=Δt_rotation_shuttle
     )
-    for cutoff in [get_cutoff(T_coherence, 0.1), Inf, get_cutoff(T_coherence, 0.25)] # 3
+    for cutoff in [get_cutoff(T_coherence, 0.1), get_cutoff(T_coherence, 0.25), Inf] # 3
         Random.seed!(seed)
 
         empty!(log_data)
