@@ -469,7 +469,7 @@ end
             chooseslotA = i,
             chooseslotB = 1,
 
-            pairstate = DepolarizedBellPair(; F = F_link),
+            pairstate = noisy_bell_state(F_link),
 
             success_prob = link_success_prob,
             rounds = -1,
