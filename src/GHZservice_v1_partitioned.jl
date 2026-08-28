@@ -15,10 +15,10 @@ seed = 1234
 
 code = length(ARGS) >= 1 ? ARGS[1] : "Steane7"
 error_model = length(ARGS) >= 2 ? ARGS[2] : "depolarizing"
-target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 100
+target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 5000
 global_idx = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 1
 output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
-max_wallclock = length(ARGS) >= 6 ? parse(Float64, ARGS[6]) : 3600.0/2.0 # seconds (1/2 hour)
+max_wallclock = length(ARGS) >= 6 ? parse(Float64, ARGS[6]) : 60 # 1min max per grid point
 
 const codes = Dict(
 
@@ -740,7 +740,7 @@ end
 
 # setup parameters varied 
 attempt_times = [0.1e-6, 0.5e-6, 1e-6, 1e-5] 
-T_coherences = [0.01, 0.1, 1.0, 2.0, 10.0, 20.0] 
+T_coherences = [0.5, 1.0, 2.0, 10.0, 20.0] 
 CNOTgate_times = [1e-6, 10e-6, 100e-6, 250e-6] 
 CNOTgate_fidelities = [0.999, 0.9995, 0.9997, 0.9999, 0.99999] 
 readout_times = [0.1e-3, 1e-3, 2e-3]
@@ -965,8 +965,8 @@ generator_dfs = DataFrame[]
 data_qubit_dfs = DataFrame[]
 node_dfs = DataFrame[]
 
-for link_success_prob in [1e-4]#[10.0^(-x) for x in 1.0:5.0]
-    for F_link in [0.99]#[1.0 - 2.5^(-x) for x in 3.0:10.0]
+for link_success_prob in [10.0^(-x) for x in 1.0:5.0]
+    for F_link in [1.0 - 2.5^(-x) for x in 3.0:10.0]
         result = run_sweep(F_link, link_success_prob)
 
         push!(generator_dfs, result.generator_summary)
