@@ -349,3 +349,19 @@ function cevaluate_decoder_pL(
 
     return pL
 end
+
+p_mem(Δt_GHZ; T_coh=1.0) = (3/4) * (1 - exp(-Δt_GHZ / T_coh))
+
+function extract_pL(gen_time, F_GHZ, code, T_coh; gate_fidelity=1.0, nsamples=100_000)
+    p_mem_val = p_mem(gen_time; T_coh=T_coh)  # generation time per stabilizer generator takes twice as long
+
+    setup = CShorSyndromeECCSetup(p_mem_val, gate_fidelity, F_GHZ)
+    decoder = CSSTableDecoder(code)
+
+    r = cevaluate_decoder_pL(decoder, setup, nsamples)
+
+    return (
+        pL = r,
+        p_mem = p_mem_val,
+    )
+end

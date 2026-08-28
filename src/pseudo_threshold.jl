@@ -597,15 +597,15 @@ xaxis = :error)  # 100 ms
 ##
 
 # ---------------------------------------------------------------------
-# 2D sweep: memory error × GHZ fidelity
+# 2D sweep: memory error × GHZ fidelity (this can take up to 1hour for 1M samples)
 # ---------------------------------------------------------------------
 
 F_gate = 1.0
-mem_errors = 10 .^ range(-4, -1, length=20)
+mem_errors = 10 .^ range(log10(1e-4), log10(3/4), length=20)
 
 fidelities = [
     1.0 - 2.5^(-x)
-    for x in range(4.0, 12.0, length=20)
+    for x in range(3.0, 10.0, length=20)
 ]
 
 ghz_infidelities = 1.0 .- fidelities
@@ -627,6 +627,7 @@ results_heatmap = zeros(
     length(fidelities),
 )
 
+start = time()
 for (ic, c) in pairs(codess)
 
     decoder = CSSTableDecoder(c; error_weight = 3)
@@ -648,11 +649,15 @@ for (ic, c) in pairs(codess)
                 )
 
             results_heatmap[ic, imem, ighz] = pL
+
         end
+        @info "Code $ic, p_mem = $p_mem"
     end
 end 
+@info "Finished 2D sweep in $(time() - start) seconds."
+
 ##
-@save "heatmap_data_Fgate1.0_allcodes.jld2" results_heatmap mem_errors fidelities codess nsamples
+@save "heatmap_data_Fgate1.0_allcodes_pmem75.jld2" results_heatmap mem_errors fidelities codess nsamples
 ##
 
 function make_pL_ratio_heatmap(

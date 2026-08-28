@@ -15,9 +15,10 @@ seed = 1234
 
 code = length(ARGS) >= 1 ? ARGS[1] : "Steane7"
 error_model = length(ARGS) >= 2 ? ARGS[2] : "depolarizing"
-target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 40000
+target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 100
 global_idx = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 1
 output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
+max_wallclock = length(ARGS) >= 6 ? parse(Float64, ARGS[6]) : 3600.0/2.0 # seconds (1/2 hour)
 
 const codes = Dict(
 
@@ -27,22 +28,19 @@ const codes = Dict(
         [2, 3, 4, 7],
     ]),
 
-    "GB16_2_4" => (16, [
-        [1, 6, 9, 10],
-        [2, 7, 10, 11],
-        [3, 8, 11, 12],
-        [1, 4, 12, 13],
-        [2, 5, 13, 14],
-        [3, 6, 14, 15],
-        [4, 7, 15, 16],
+    # [[12,2,3]] bivariate-bicycle code: 10 independent weight-4 generators
+    "BB12_2_3" => (12, [
+        [3, 4, 7, 8],
+        [1, 5, 8, 9],
+        [2, 6, 7, 9],
+        [1, 6, 10, 11],
+        [2, 4, 11, 12],
 
-        [1, 8, 9, 12],
-        [1, 2, 10, 13],
-        [2, 3, 11, 14],
-        [3, 4, 12, 15],
-        [4, 5, 13, 16],
-        [5, 6, 9, 14],
-        [6, 7, 10, 15],
+        [1, 3, 8, 10],
+        [1, 2, 9, 11],
+        [2, 3, 7, 12],
+        [4, 6, 7, 11],
+        [4, 5, 8, 12],
     ]),
 
     "GB26_2_5" => (26, [
@@ -74,6 +72,74 @@ const codes = Dict(
     ]),
 )
 
+# Fixed data-qubit partitions for the codes that use multiple data qubits per node.
+# Each inner vector contains the data qubits hosted by one remote node.
+# Codes without an explicit entry fall back to one data qubit per node.
+const NODE_PARTITIONS = Dict(
+    # Steane keeps the original architecture: one data qubit / one communication node.
+    # The three entries in GENERATORS are the three distinct support patterns;
+    # X- and Z-type checks share these supports. For data-qubit waiting times, every
+    # completed GHZ on a support is one stabilizer-measurement opportunity for each
+    # data qubit in that support, independent of whether it is used for X or Z.
+    "Steane7" => [[q] for q in 1:7],
+
+    # 6 nodes, two data qubits per node. Stabilizer loads: [7, 6, 7, 7, 6, 7].
+    "BB12_2_3" => [
+        [1, 12],
+        [2, 10],
+        [3, 11],
+        [4, 9],
+        [5, 7],
+        [6, 8],
+    ],
+
+    # 12 nodes. Every weight-4 generator spans four distinct nodes.
+    # Stabilizer loads: [9, 9, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8].
+    "GB26_2_5" => [
+        [3, 9, 11],
+        [13, 23, 24],
+        [1, 2],
+        [4, 5],
+        [6, 7],
+        [8, 12],
+        [10, 15],
+        [14, 18],
+        [16, 17],
+        [19, 20],
+        [21, 22],
+        [25, 26],
+    ],
+)
+
+const N_DATA = codes[code][1]
+const GENERATORS = codes[code][2]
+const NODE_PARTITION = get(NODE_PARTITIONS, code, [[q] for q in 1:N_DATA])
+const N_NODES = length(NODE_PARTITION)
+
+# Validate that the partition is a proper partition of all data qubits.
+const PARTITIONED_DATA_QUBITS = vcat(NODE_PARTITION...)
+@assert length(PARTITIONED_DATA_QUBITS) == N_DATA "Node partition must contain exactly N_DATA qubits."
+@assert allunique(PARTITIONED_DATA_QUBITS) "A data qubit occurs in more than one node."
+@assert sort(PARTITIONED_DATA_QUBITS) == collect(1:N_DATA) "Node partition must contain every data qubit exactly once."
+
+# Map the QEC-layer data-qubit supports to the network-layer node supports.
+const DATA_TO_NODE = Dict(
+    q => node_idx
+    for (node_idx, qubits) in enumerate(NODE_PARTITION)
+    for q in qubits
+)
+
+const GENERATOR_TO_NODES = [
+    sort([DATA_TO_NODE[q] for q in generator])
+    for generator in GENERATORS
+]
+
+# With one communication qubit per node, no stabilizer may require a node twice.
+@assert all(
+    length(node_support) == length(generator) && allunique(node_support)
+    for (node_support, generator) in zip(GENERATOR_TO_NODES, GENERATORS)
+) "Invalid node partition: at least one stabilizer contains multiple data qubits hosted by the same node."
+
 const paulis = (nothing, X, Y, Z)
 @inline function sample_depol2q(gate_fidelity::Float64)
     λ = 4/3 * (1-gate_fidelity)
@@ -81,18 +147,168 @@ const paulis = (nothing, X, Y, Z)
     return (rand(paulis), rand(paulis))
 end
 
-const ghzs = [ghz(k) for k in 1:4] # make const in order to not build new every time
+const ghzs = [ghz(k) for k in 1:maximum(length.(GENERATORS))] # cache required GHZ sizes
 
-const CLIENT_TO_GENERATORS = Dict(
-    i => findall(g -> i in g, codes[code][2]) for i in 1:codes[code][1]
+# Network-level lookup tables. These are indexed by physical node / switch slot,
+# not by data-qubit index.
+const NODE_TO_GENERATORS = Dict(
+    node_idx => findall(nodes -> node_idx in nodes, GENERATOR_TO_NODES)
+    for node_idx in 1:N_NODES
 )
 
-const CLIENT_TO_CLIENTINCOMMON = Dict(
-    i => sort(setdiff(unique(vcat((collect(codes[code][2][g]) for g in CLIENT_TO_GENERATORS[i])...)), [i]))
-    for i in 1:codes[code][1]
+const NODE_TO_NODEINCOMMON = Dict(
+    node_idx => sort(setdiff(unique(vcat((GENERATOR_TO_NODES[g] for g in NODE_TO_GENERATORS[node_idx])...)), [node_idx]))
+    for node_idx in 1:N_NODES
 )
 
 const LogRow = Tuple{Float64, Int, Float64}
+
+# QEC-layer lookup: which stabilizer supports contain each data qubit.
+# This remains defined in terms of the ORIGINAL data-qubit supports, even when
+# several data qubits are hosted by the same physical node.
+const DATA_QUBIT_TO_GENERATORS = Dict(
+    q => findall(generator -> q in generator, GENERATORS)
+    for q in 1:N_DATA
+)
+
+"""
+    inter_event_times(times)
+
+Return waiting times between consecutive events, including the initial waiting
+interval from simulation time 0 to the first event. This matches the convention
+used previously for generator-specific `mean_generation_time`.
+"""
+function inter_event_times(times::AbstractVector{<:Real})
+    isempty(times) && return Float64[]
+    ts = sort(Float64.(times))
+    return [first(ts); diff(ts)]
+end
+
+safe_mean(x) = isempty(x) ? NaN : mean(x)
+safe_std(x) = length(x) <= 1 ? NaN : std(x)
+safe_sem(x) = length(x) <= 1 ? NaN : std(x) / sqrt(length(x))
+safe_rate(times) = isempty(times) || maximum(times) <= 0 ? NaN : length(times) / maximum(times)
+
+"""
+    data_qubit_waiting_summary(completion_logs)
+
+Construct the exact stabilizer-measurement event stream seen by every DATA QUBIT
+from the global GHZ completion log. A GHZ completion for generator `g` counts as
+an event for every q in `GENERATORS[g]`.
+
+For a partitioned architecture this is intentionally NOT the same as the node
+stream: a node may host several data qubits, but a valid partition guarantees
+that a given stabilizer touches at most one of them.
+"""
+function data_qubit_waiting_summary(completion_logs::DataFrame)
+    rows = NamedTuple[]
+
+    for q in 1:N_DATA
+        generator_indices = DATA_QUBIT_TO_GENERATORS[q]
+        mask = in.(completion_logs.generator_idx, Ref(generator_indices))
+        times = collect(completion_logs.timesteps[mask])
+        fidelities = collect(completion_logs.GHZfidel[mask])
+        waits = inter_event_times(times)
+
+        push!(rows, (
+            data_qubit_idx = q,
+            node_idx = DATA_TO_NODE[q],
+            n_generators = length(generator_indices),
+            generator_indices = copy(generator_indices),
+            mean_inter_measurement_time = safe_mean(waits),
+            std_inter_measurement_time = safe_std(waits),
+            sem_inter_measurement_time = safe_sem(waits),
+            mean_measurement_rate = safe_rate(times),
+            n_measurements = length(times),
+            mean_GHZfidel = safe_mean(fidelities),
+            std_GHZfidel = safe_std(fidelities),
+            sem_GHZfidel = safe_sem(fidelities),
+        ))
+    end
+
+    return DataFrame(rows)
+end
+
+"""
+    node_waiting_summary(completion_logs)
+
+Construct the GHZ inter-completion stream seen by every PHYSICAL NODE. A GHZ
+completion for generator `g` counts as an event for every node in
+`GENERATOR_TO_NODES[g]`.
+
+With one communication qubit per node this quantity measures communication-qubit
+service/load. If a node hosts multiple data qubits, its node stream is the union
+of the measurement streams of those local data qubits.
+"""
+function node_waiting_summary(completion_logs::DataFrame)
+    rows = NamedTuple[]
+
+    for node_idx in 1:N_NODES
+        generator_indices = NODE_TO_GENERATORS[node_idx]
+        mask = in.(completion_logs.generator_idx, Ref(generator_indices))
+        times = collect(completion_logs.timesteps[mask])
+        fidelities = collect(completion_logs.GHZfidel[mask])
+        waits = inter_event_times(times)
+
+        push!(rows, (
+            node_idx = node_idx,
+            data_qubits = copy(NODE_PARTITION[node_idx]),
+            n_data_qubits = length(NODE_PARTITION[node_idx]),
+            n_generators = length(generator_indices),
+            generator_indices = copy(generator_indices),
+            mean_inter_completion_time = safe_mean(waits),
+            std_inter_completion_time = safe_std(waits),
+            sem_inter_completion_time = safe_sem(waits),
+            mean_completion_rate = safe_rate(times),
+            n_completions = length(times),
+            mean_GHZfidel = safe_mean(fidelities),
+            std_GHZfidel = safe_std(fidelities),
+            sem_GHZfidel = safe_sem(fidelities),
+        ))
+    end
+
+    return DataFrame(rows)
+end
+
+# Attach the hardware/run parameters to any per-run summary DataFrame.
+function add_run_metadata!(
+    df::DataFrame;
+    link_success_prob,
+    attempt_time,
+    T_coherence,
+    F_link,
+    error_model,
+    cutoff,
+    Δt_rotation_shuttle,
+    Δt_CNOTgate,
+    gate_fidelity,
+    Δt_readout,
+    readout_fidelity,
+    runtime,
+    wallclock_time,
+)
+    df[!, :link_success_prob] .= link_success_prob
+    df[!, :attempt_time] .= attempt_time
+    df[!, :T_coherence] .= T_coherence
+    df[!, :F_link] .= F_link
+    df[!, :error_model] .= error_model
+    df[!, :cutoff] .= cutoff
+    df[!, :tRotationShuttle] .= Δt_rotation_shuttle
+    df[!, :tCNOT] .= Δt_CNOTgate
+    df[!, :gate_fidelity] .= gate_fidelity
+    df[!, :tReadout] .= Δt_readout
+    df[!, :readout_fidelity] .= readout_fidelity
+    df[!, :runtime] .= runtime
+    df[!, :wallclock_time] .= wallclock_time
+    df[!, :seed] .= seed
+    df[!, :global_idx] .= global_idx
+    df[!, :n_data] .= N_DATA
+    df[!, :n_nodes] .= N_NODES
+    df[!, :node_partition] .= string(NODE_PARTITION)
+    return df
+end
+
+@info "Using code $(code) with $(N_DATA) data qubits on $(N_NODES) physical nodes; node partition = $(NODE_PARTITION)"
 
 function noisy_bell_state(target_fidelity::Float64=0.97)
     λ = (4 * target_fidelity - 1) / 3
@@ -117,22 +333,23 @@ end
 
     msgs = queryall(net[1], :PartOfGenSet, gen_set_index, pm_slot.idx, ❓; filo = false)
     
-    !iscutoff && @assert length(msgs) == 4 "Expected to find all slots of complete generator set for piecemaker slot $(pm_slot.idx) but received: $(msgs)"
+    expected_weight = length(GENERATOR_TO_NODES[gen_set_index])
+    !iscutoff && @assert length(msgs) == expected_weight "Expected to find all $(expected_weight) node slots of complete generator set for piecemaker slot $(pm_slot.idx) but received: $(msgs)"
 
     pm_msg = query(net[1][pm_slot.idx], :isPiecemaker, ❓; assigned = true, filo = false)
     @assert !isnothing(pm_msg) "Expected piecemaker slot $(pm_slot.idx) to be tagged with isPiecemaker but it is not!"
     
-    # check that the four switch slots are exactly the correct generator
+    # check that the participating switch slots are exactly the correct node support of the generator
     switchslots_idcs = sort([msg.slot.idx for msg in msgs])
     @debug "Generator set indices for generator set $(gen_set_index): $(switchslots_idcs)"
 
     
-    !iscutoff && @assert switchslots_idcs == codes[code][2][gen_set_index] "The generator set is not correct."
+    !iscutoff && @assert switchslots_idcs == GENERATOR_TO_NODES[gen_set_index] "The generator set is not correct."
     @assert allunique(switchslots_idcs) "All switch slots tagged as part of the generator set need to be unique!"
     @assert allequal([msg.tag[3] for msg in msgs]) "Not all slots tagged as part of the generator set have the same piecemaker slot idx!"
 
     tagids = [msg.tag[4] for msg in msgs]
-    # choose arbitrary client slot idx among the 4 tagged as part of the generator set to apply correction if needed   
+    # choose an arbitrary remote communication qubit among those tagged as part of the generator set to apply correction if needed   
     clientslot_idcs_msgs = [client_msg for switchslotmsg in msgs for client_msg in queryall(net[1][switchslotmsg.slot.idx], SwitchSlotInfo, ❓, ❓, ❓; filo=false) if client_msg.id in tagids]
     clientslot_idcs = [client_msg.tag[3] for client_msg in clientslot_idcs_msgs]
     @debug "SWICH SLOT INDICES: $([msg.slot.idx for msg in msgs]), CLIENT SLOT INDICES: $clientslot_idcs"
@@ -363,19 +580,20 @@ end
     # first it checks for all possible GHZ attempts to fuse with (using tag PartOfGenSet)
     # if the answer is (an)other slot(s) it calls fusion for the oldest piecemaker slot
     # if non of the current GHZ attempts are suitable for fusion, it becomes a new piecemaker and starts a new GHZ attempt 
-    # and receives tag isPiecemaker; in addition it receives a generator set tag PartOfGenSet unformly at random from the generator sets that contain the current switch slot idx
+    # and receives tag isPiecemaker; in addition it receives a generator set tag PartOfGenSet uniformly at random
+    # from the generators whose NODE SUPPORT contains the current switch slot / physical node.
 
     @assert isnothing(query(net[1][switchslot_idx], :PartOfGenSet, ❓, ❓, ❓; assigned = true, filo = false)) "This slot is already part of a GHZ attempt, it should not have received a new Bell pair."
 
     # we query for all potential piecemaker slots among clients that have a generator set in common
     pmslot_msgs = []
-    for otherswitchslot_idx in CLIENT_TO_CLIENTINCOMMON[switchslot_idx]
+    for otherswitchslot_idx in NODE_TO_NODEINCOMMON[switchslot_idx]
         pmslot_msg = query(net[1][otherswitchslot_idx], :isPiecemaker, ❓; assigned = true, filo = false)
         if !isnothing(pmslot_msg)
             @debug "Found potential piecemaker slot at switch slot idx $(otherswitchslot_idx) with info $(pmslot_msg)"
             gensetinfo_msg = query(pmslot_msg.slot, :PartOfGenSet, ❓, pmslot_msg.slot.idx, ❓; assigned = true, filo = false)
-            @debug "checking if current switch slot idx $(switchslot_idx) and potential piecemaker slot idx $(otherswitchslot_idx) are part of the same generator $(CLIENT_TO_GENERATORS[gensetinfo_msg.tag[2]])"
-            (switchslot_idx ∈ codes[code][2][gensetinfo_msg.tag[2]]) && push!(pmslot_msgs, pmslot_msg) # only consider it as potential piecemaker slot if the current switch slot is part of the same generator set as the piecemaker slot
+            @debug "checking if current switch slot idx $(switchslot_idx) and potential piecemaker slot idx $(otherswitchslot_idx) are part of generator node support $(GENERATOR_TO_NODES[gensetinfo_msg.tag[2]])"
+            (switchslot_idx ∈ GENERATOR_TO_NODES[gensetinfo_msg.tag[2]]) && push!(pmslot_msgs, pmslot_msg) # only consider it as potential piecemaker slot if the current switch slot is part of the same generator set as the piecemaker slot
         end
     end
     
@@ -384,7 +602,7 @@ end
         @yield lock(net[1][switchslot_idx])
         attempt_id = next_attempt_id!(attempt_counter)
         tag!(net[1][switchslot_idx], Tag(:isPiecemaker, attempt_id))
-        gen_set_idx = rand(CLIENT_TO_GENERATORS[switchslot_idx])
+        gen_set_idx = rand(NODE_TO_GENERATORS[switchslot_idx])
         tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
         @debug "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
         unlock(net[1][switchslot_idx])
@@ -412,7 +630,7 @@ end
             @yield lock(net[1][switchslot_idx])
             attempt_id = next_attempt_id!(attempt_counter)
             tag!(net[1][switchslot_idx], Tag(:isPiecemaker, attempt_id))
-            gen_set_idx = rand(CLIENT_TO_GENERATORS[switchslot_idx])
+            gen_set_idx = rand(NODE_TO_GENERATORS[switchslot_idx])
             tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
             @debug "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
             unlock(net[1][switchslot_idx])
@@ -420,9 +638,9 @@ end
             # in this case we found a piecemaker slot within a suitable generator set and fuse with it
             @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity)
 
-            # check if after fusion the GHZ state is complete with 4 clients (i.e., the current slot was the last to complete the generator set)
+            # check if after fusion the GHZ state contains all nodes required by this generator
             msgs = queryall(net[1], :PartOfGenSet, gen_set_idx, pmslot_to_fuse_with.idx, ❓; filo = false)
-            if length(msgs) == 4 
+            if length(msgs) == length(GENERATOR_TO_NODES[gen_set_idx])
                 @yield @process consumer(sim, net, pmslot_to_fuse_with, gen_set_idx, false, log_data, Δt_readout, readout_fidelity) # if the fused state is complete, run the consume listener to consume it;
             end
         end
@@ -453,13 +671,13 @@ end
 @resumable function naive_entangler(
     sim,
     net,
-    n,
+    n_nodes,
     F_link,
     link_success_prob,
     attempt_t,
     Δt_rotation_shuttle,
 )
-    for i in 1:n
+    for i in 1:n_nodes
         entangler = EntanglerProt(
             sim = sim,
             net = net,
@@ -482,30 +700,30 @@ end
     end
 end
 
-function prepare_sim(n, T_link::Float64, F_link::Float64, link_success_prob::Float64, attempt_t::Float64, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64,
+function prepare_sim(n_nodes, T_link::Float64, F_link::Float64, link_success_prob::Float64, attempt_t::Float64, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64,
     error_model::String, cutoff::Float64, Δt_rotation_shuttle::Float64, log_data::Vector{LogRow})
 
 
     states_representation = QuantumOpticsRepr()
-    @debug "Preparing simulation with parameters: n=$(n), T_link=$(T_link), cutoff=$(cutoff), F_link=$(F_link), link_success_prob=$(link_success_prob), attempt_time=$(attempt_t)"
+    @debug "Preparing simulation with parameters: n_nodes=$(n_nodes), T_link=$(T_link), cutoff=$(cutoff), F_link=$(F_link), link_success_prob=$(link_success_prob), attempt_time=$(attempt_t)"
     
     noise_model = error_model == "dephasing" ? T2Dephasing(T_link) : Depolarization(T_link)
 
     # Network setup
     switch = Register(
-        [Qubit() for _ in 1:n],
-        [states_representation for _ in 1:n],
-        [noise_model for _ in 1:n]
+        [Qubit() for _ in 1:n_nodes],
+        [states_representation for _ in 1:n_nodes],
+        [noise_model for _ in 1:n_nodes]
     )
     clients = [
         Register(
             [Qubit()],
             [states_representation],
             [noise_model]
-        ) for _ in 1:n
+        ) for _ in 1:n_nodes
     ]
 
-    graph = star_graph(n + 1)
+    graph = star_graph(n_nodes + 1)
     net = RegisterNet(graph, [switch, clients...])
 
     sim = get_time_tracker(net)
@@ -514,14 +732,14 @@ function prepare_sim(n, T_link::Float64, F_link::Float64, link_success_prob::Flo
     global_pause = Ref(0.0)
 
     @process switch_listener(sim, net, attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, cutoff, Δt_rotation_shuttle, global_pause, log_data)
-    @process naive_entangler(sim, net, n, F_link, link_success_prob, attempt_t, Δt_rotation_shuttle)
+    @process naive_entangler(sim, net, n_nodes, F_link, link_success_prob, attempt_t, Δt_rotation_shuttle)
     return sim
 end
 
 ## run the simulation
 
 # setup parameters varied 
-attempt_times = [0.1e-6, 0.5e-6, 1e-6, 1e-5]  
+attempt_times = [0.1e-6, 0.5e-6, 1e-6, 1e-5] 
 T_coherences = [0.01, 0.1, 1.0, 2.0, 10.0, 20.0] 
 CNOTgate_times = [1e-6, 10e-6, 100e-6, 250e-6] 
 CNOTgate_fidelities = [0.999, 0.9995, 0.9997, 0.9999, 0.99999] 
@@ -537,62 +755,67 @@ parameter_combinations = [
             for Δt_CNOTgate in CNOTgate_times for Δt_readout in readout_times for readout_fidelity in readout_fidelities for Δt_rotation_shuttle in rotation_shuttle_times        
 ]
 ##
-
-function estimate_runtime_for_samples(
-    target_samples::Int;
-    n::Int,
-    attempt_time::Float64,
-    link_success_prob::Float64,
-    Δt_CNOTgate::Float64,
-    Δt_readout::Float64,
-    Δt_rotation_shuttle::Float64
-)
-    # Four Bell links are needed for one 4-client GHZ.
-    t_link_per_sample = 4 * ( attempt_time / (n * link_success_prob) + Δt_rotation_shuttle )
-
-    # A 4-client GHZ needs 3 fusions after the first piecemaker Bell pair.
-    t_gate_per_sample = 3 * (Δt_CNOTgate + Δt_readout) + Δt_readout
-
-    t_sample = t_link_per_sample + t_gate_per_sample
-
-    return (target_samples * t_sample)
-end
-
 function get_cutoff(T_coherence, error_budget)
     return -T_coherence * log(1 - 4/3 * ( 1 - (1-error_budget)^0.25 ))
 end
 
+function check_convergence(
+    log_data,
+    generators;
+    min_samples = 1000,
+)
+    isempty(log_data) && return false
+
+    times  = first.(log_data)
+    genidx = getindex.(log_data, 2)
+
+    n_data = maximum(vcat(generators...))
+
+    # Every data qubit needs min_samples inter-measurement intervals
+    for q in 1:n_data
+        relevant_gens = findall(g -> q in g, generators)
+
+        n_measurements = count(g -> g in relevant_gens, genidx)
+        n_waits = max(n_measurements - 1, 0)
+
+        n_waits < min_samples && return false
+    end
+
+    # Every stabilizer needs min_samples GHZ fidelity samples
+    for g in eachindex(generators)
+        count(==(g), genidx) < min_samples && return false
+    end
+
+    return true
+end
+
 function run_sweep(F_link, link_success_prob)
 
-    attempt_time =  10e-6 #parameter_combinations[global_idx][1] ##
-    T_coherence =   1.0 # parameter_combinations[global_idx][2] # #
-    Δt_CNOTgate =  100e-6 #parameter_combinations[global_idx][3] #100e-6 #
-    gate_fidelity =  0.9997 #parameter_combinations[global_idx][4] #0.9997 #
-    Δt_readout =  1e-3 #parameter_combinations[global_idx][5] #1e-3 #
-    readout_fidelity =  0.9999 #parameter_combinations[global_idx][6] #0.9999 #
-    Δt_rotation_shuttle =  100e-6 #parameter_combinations[global_idx][7] #100e-6 #
+    # One PBS array index selects one of the 12,960 local-operation parameter combinations.
+    attempt_time = parameter_combinations[global_idx][1]
+    T_coherence = parameter_combinations[global_idx][2]
+    Δt_CNOTgate = parameter_combinations[global_idx][3]
+    gate_fidelity = parameter_combinations[global_idx][4]
+    Δt_readout = parameter_combinations[global_idx][5]
+    readout_fidelity = parameter_combinations[global_idx][6]
+    Δt_rotation_shuttle = parameter_combinations[global_idx][7]
 
     @debug "Running sweep with parameters: attempt_time=$(attempt_time), link_success_prob=$(link_success_prob), T_coherence=$(T_coherence), F_link=$(F_link), gate_fidelity=$(gate_fidelity), Δt_readout=$(Δt_readout), readout_fidelity=$(readout_fidelity)"
 
     log_data = LogRow[]
-    dataframes = DataFrame[]
+    generator_dataframes = DataFrame[]
+    data_qubit_dataframes = DataFrame[]
+    node_dataframes = DataFrame[]
 
-    runtime = estimate_runtime_for_samples(
-        target_samples;
-        n=codes[code][1],
-        attempt_time=attempt_time,
-        link_success_prob=link_success_prob,
-        Δt_CNOTgate=Δt_CNOTgate,
-        Δt_readout=Δt_readout,
-        Δt_rotation_shuttle=Δt_rotation_shuttle
-    )
+    add_runtime_batch = 0.1
+
     for cutoff in [get_cutoff(T_coherence, 0.1), get_cutoff(T_coherence, 0.25), Inf] # 3
         Random.seed!(seed)
 
         empty!(log_data)
 
         sim = prepare_sim(
-            codes[code][1],
+            N_NODES,
             T_coherence,
             F_link,
             link_success_prob,
@@ -606,11 +829,34 @@ function run_sweep(F_link, link_success_prob)
             Δt_rotation_shuttle,
             log_data
         )
-        @debug "Starting simulation with runtime $(runtime) seconds"
 
-        t_wallclock = @elapsed run(sim, runtime)
+        t_wallclock = 0.0
+        runtime = 0.0
+        while true
+            t_wallclock += @elapsed run(sim, now(sim) + add_runtime_batch)
+            runtime += add_runtime_batch
 
-        logs = DataFrame(
+            if check_convergence(
+                log_data,
+                codes[code][2];
+                min_samples = target_samples,
+            )
+                @info "Reached convergence"
+                break
+            end
+
+            if t_wallclock > max_wallclock
+                @warn "Reached maximum wallclock time $(max_wallclock) seconds without convergence"
+                break
+            end
+        end
+
+        # ------------------------------------------------------------------
+        # RAW GHZ COMPLETION EVENTS
+        # ------------------------------------------------------------------
+        # One row = one successfully completed GHZ resource. `generator_idx`
+        # still refers to the ORIGINAL DATA-QUBIT stabilizer support.
+        completion_logs = DataFrame(
             log_data,
             [
                 :timesteps,
@@ -619,7 +865,12 @@ function run_sweep(F_link, link_success_prob)
             ],
         )
 
-        logs = combine(groupby(logs, :generator_idx), 
+        sort!(completion_logs, :timesteps)
+
+        # ------------------------------------------------------------------
+        # 1) ORIGINAL PER-GENERATOR STATISTICS
+        # ------------------------------------------------------------------
+        generator_logs = combine(groupby(completion_logs, :generator_idx),
             :GHZfidel => mean => :mean_GHZfidel,
             :GHZfidel => std => :std_GHZfidel,
             :GHZfidel => (x -> std(x)/sqrt(length(x))) => :sem_GHZfidel,
@@ -629,40 +880,111 @@ function run_sweep(F_link, link_success_prob)
             :timesteps => (x -> std([first(x); diff(x)])/sqrt(length(x))) => :sem_generation_time,
             nrow => :nlogs,
         )
-        
-        logs[!, :link_success_prob] .= link_success_prob
-        logs[!, :attempt_time] .= attempt_time
-        logs[!, :T_coherence] .= T_coherence
-        logs[!, :F_link] .= F_link
-        logs[!, :error_model] .= error_model
-        logs[!, :cutoff] .= cutoff
-        logs[!, :tRotationShuttle] .= Δt_rotation_shuttle
-        logs[!, :tCNOT] .= Δt_CNOTgate
-        logs[!, :gate_fidelity] .= gate_fidelity
-        logs[!, :tReadout] .= Δt_readout
-        logs[!, :readout_fidelity] .= readout_fidelity
-        logs[!, :runtime] .= runtime
-        logs[!, :wallclock_time] .= t_wallclock
-        logs[!, :seed] .= seed
 
-        push!(dataframes, logs)
+        # ------------------------------------------------------------------
+        # 2) PER-DATA-QUBIT INTER-MEASUREMENT STATISTICS
+        # ------------------------------------------------------------------
+        # For q, merge completion events from ALL generators containing q.
+        # This is the quantity to use for a data-qubit memory waiting time.
+        data_qubit_logs = data_qubit_waiting_summary(completion_logs)
+
+        # ------------------------------------------------------------------
+        # 3) PER-NODE INTER-COMPLETION STATISTICS
+        # ------------------------------------------------------------------
+        # For node m, merge completion events from ALL generators whose node
+        # support contains m. This characterizes communication-qubit workload.
+        node_logs = node_waiting_summary(completion_logs)
+
+        add_run_metadata!(generator_logs;
+            link_success_prob=link_success_prob,
+            attempt_time=attempt_time,
+            T_coherence=T_coherence,
+            F_link=F_link,
+            error_model=error_model,
+            cutoff=cutoff,
+            Δt_rotation_shuttle=Δt_rotation_shuttle,
+            Δt_CNOTgate=Δt_CNOTgate,
+            gate_fidelity=gate_fidelity,
+            Δt_readout=Δt_readout,
+            readout_fidelity=readout_fidelity,
+            runtime=runtime,
+            wallclock_time=t_wallclock,
+        )
+
+        add_run_metadata!(data_qubit_logs;
+            link_success_prob=link_success_prob,
+            attempt_time=attempt_time,
+            T_coherence=T_coherence,
+            F_link=F_link,
+            error_model=error_model,
+            cutoff=cutoff,
+            Δt_rotation_shuttle=Δt_rotation_shuttle,
+            Δt_CNOTgate=Δt_CNOTgate,
+            gate_fidelity=gate_fidelity,
+            Δt_readout=Δt_readout,
+            readout_fidelity=readout_fidelity,
+            runtime=runtime,
+            wallclock_time=t_wallclock,
+        )
+
+        add_run_metadata!(node_logs;
+            link_success_prob=link_success_prob,
+            attempt_time=attempt_time,
+            T_coherence=T_coherence,
+            F_link=F_link,
+            error_model=error_model,
+            cutoff=cutoff,
+            Δt_rotation_shuttle=Δt_rotation_shuttle,
+            Δt_CNOTgate=Δt_CNOTgate,
+            gate_fidelity=gate_fidelity,
+            Δt_readout=Δt_readout,
+            readout_fidelity=readout_fidelity,
+            runtime=runtime,
+            wallclock_time=t_wallclock,
+        )
+
+        push!(generator_dataframes, generator_logs)
+        push!(data_qubit_dataframes, data_qubit_logs)
+        push!(node_dataframes, node_logs)
 
         @info "cutoff: $cutoff, runtime: $runtime, wallclock_time: $t_wallclock"
     end
-    df = vcat(dataframes...)
-    return df
+
+    return (
+        generator_summary = vcat(generator_dataframes...),
+        data_qubit_summary = vcat(data_qubit_dataframes...),
+        node_summary = vcat(node_dataframes...),
+    )
 end
 
 ##
 
-dfs = DataFrame[]
-for link_success_prob in [1e-4]#[10.0^(-x) for x in 1.0:5.0] 
-    for F_link in [0.97]#[1.0 - 2.5^(-x) for x in 3.0:10.0]
-        df = run_sweep(F_link, link_success_prob)
-        push!(dfs, df)
+# Keep the original `df_out` name for backwards compatibility. New outputs are
+# saved alongside it for the per-data-qubit and per-node waiting-time analysis.
+generator_dfs = DataFrame[]
+data_qubit_dfs = DataFrame[]
+node_dfs = DataFrame[]
+
+for link_success_prob in [1e-4]#[10.0^(-x) for x in 1.0:5.0]
+    for F_link in [0.99]#[1.0 - 2.5^(-x) for x in 3.0:10.0]
+        result = run_sweep(F_link, link_success_prob)
+
+        push!(generator_dfs, result.generator_summary)
+        push!(data_qubit_dfs, result.data_qubit_summary)
+        push!(node_dfs, result.node_summary)
+
         @info "Completed sweep for F_link=$(F_link), link_success_prob=$(link_success_prob)"
     end
 end
-df_out = vcat(dfs...)
+
+df_out = vcat(generator_dfs...)
+df_data_qubit_out = vcat(data_qubit_dfs...)
+df_node_out = vcat(node_dfs...)
+
 ##
-@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_current_tcutsmall.jld2" df_out #$(global_idx)
+# `df_out`:                original per-generator GHZ statistics
+# `df_data_qubit_out`:     exact per-data-qubit inter-measurement statistics
+# `df_node_out`:           exact per-physical-node GHZ inter-completion statistics
+# Raw GHZ completion streams are intentionally not persisted; they are only
+# held temporarily within each run to construct the summary statistics above.
+@save "$(output_path)/summary_ghz_service_v1_$(code)_$(error_model)_$(global_idx).jld2" df_out df_data_qubit_out df_node_out

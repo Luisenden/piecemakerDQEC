@@ -63,8 +63,10 @@ end
 
 
 # Conservative logical error probability
-pL = results_heatmap[1, :, :]
+#@load "heatmap_data_Fgate1.0_allcodes.jld2" results_heatmap mem_errors fidelities codess nsamples
 
+pL = results_heatmap[1, :, :]
+ghz_infidelities = 1 .- fidelities
 
 β, pL_fit = fit_2d_log_surface(
     mem_errors,

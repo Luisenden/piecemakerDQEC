@@ -36,3 +36,4 @@ JuliaLocalPreferences.toml
 # files to be deleted soon
 *.csv
 load_*.jl
+*.pdf
