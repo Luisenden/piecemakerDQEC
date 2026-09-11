@@ -809,7 +809,7 @@ function run_sweep(F_link, link_success_prob)
 
     add_runtime_batch = 0.1
 
-    for cutoff in [get_cutoff(T_coherence, 0.1), get_cutoff(T_coherence, 0.25), Inf] # 3
+    for cutoff in [get_cutoff(T_coherence, 0.01), get_cutoff(T_coherence, 0.05), Inf] # 3
         Random.seed!(seed)
 
         empty!(log_data)

@@ -14,22 +14,49 @@ folder = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechn
 columns =  [:attempt_time, :T_coherence, :error_model, :tRotationShuttle, :tCNOT, :gate_fidelity, 
             :tReadout, :readout_fidelity, :runtime, :wallclock_time, :nlogs]
 
-dfs = DataFrame[]
+dfs_data = DataFrame[]
+dfs_node = DataFrame[]
 files = []
-df_out = nothing
 for folder in [folder]
     files = readdir(folder)
     for file in files
+        df_data_qubit_out = DataFrame()
+        df_node_out = DataFrame()
         path = joinpath(folder, file)
         try
-            @load path df_out
+            @load path df_out df_data_qubit_out df_node_out
+            dq = sort(df_data_qubit_out, [:cutoff, :node_idx])
+            nd = sort(df_node_out, [:cutoff, :node_idx])
+            push!(dfs_data, dq)
+            push!(dfs_node, nd)
+            @info "Data qubit and node times are equal: " all(dq.mean_inter_measurement_time .== nd.mean_inter_completion_time)
         catch
         end
-        !isnothing(df_out) && push!(dfs, df_out)
     end
 end
-@info "Loaded $(length(dfs)) dataframes from $(folder)."
-df = vcat(dfs...)
+# @info "Loaded $(length(dfs)) dataframes from $(folder)."
+df_data = vcat(dfs_data...)
+df_node = vcat(dfs_node...)
+
+##
+df_data_take = df_data[df_data.n_measurements .>= 1000, :]
+##
+axis_order = [
+    :gate_fidelity,
+    :tReadout,
+    # :readout_fidelity,
+    :F_link,
+    :T_coherence,
+    :link_success_prob,
+    :attempt_time,
+    :tRotationShuttle,
+    :tCNOT,
+]
+
+df_data_qubit_avg = combine( groupby( df_data_take, [axis_order...; :cutoff]),
+    :mean_GHZfidel => mean => :mean_GHZfidel,
+    :mean_inter_measurement_time => mean => :mean_inter_measurement_time
+    )
 
 ##
 files = readdir(folder)
@@ -37,31 +64,24 @@ indices = [
     parse(Int, match(r"_(\d+)\.jld2$", str).captures[1])
     for str in files
 ]
-all_indices = 1:12960
+all_indices = 1:10800
 missing_indices = setdiff(all_indices, indices)
-
-##
-df = df[df.generator_idx .== 1, :]
-df[!, :mean_generation_time] = df.mean_generation_time .* 2
-#df = df[df.cutoff .== Inf, :]
 
 
 ##
 code = Steane7()
 T_coh = 1.0
-res = []
-count = 0
+df = df_data_qubit_avg
 ##
-df[!, :p_mem] = p_mem.(df.mean_generation_time; T_coh=T_coh)
-df[!, :pL] = pL_fit.(df.p_mem, 1.0 .- df.mean_GHZfidel)
+df[!, :p_mem] = p_mem.(df.mean_inter_measurement_time; T_coh=T_coh)
+df[!, :pL_approx] = pL_fit.(df.p_mem, 1.0 .- df.mean_GHZfidel)
 
-df_both_targets = df[(df.pL .<= df.p_mem) .&& (df.p_mem .< 0.1), :]
-#@save "df_both_targets_pmem.jld2" df_both_targets
+df_both_targets = df[(df.pL_approx .<= 1.4.*df.p_mem), :]
 
 ## pareto front analysis (this can take several minutes)
 
 objectives = [
-    (:readout_fidelity, :min),
+    # (:readout_fidelity, :min),
     (:tReadout, :max),
     (:gate_fidelity, :min),
     (:tCNOT, :max),
@@ -128,9 +148,9 @@ code = Steane7()
 T_coh = 1.0
 transform!(
     pareto_df,
-    [:mean_generation_time, :mean_GHZfidel] =>
+    [:mean_inter_measurement_time, :mean_GHZfidel] =>
         ByRow((gen_time, F_GHZ) ->
-            extract_pL(gen_time, F_GHZ, code, T_coh; nsamples=1000_000)
+            extract_pL(gen_time, F_GHZ, code, T_coh; gate_fidelity=0.9997, nsamples=1000_000)
         ) =>
         AsTable
 )
@@ -138,11 +158,12 @@ transform!(
 
 ##
 
-pareto_df_hard = pareto_df[(pareto_df.pL .<= pareto_df.p_mem) .&& (pareto_df.p_mem .< 0.1), :]
+pareto_df_hard = pareto_df[(pareto_df.pL .<= pareto_df.p_mem), :]
 
 ##
 objectives_ordered_easy_to_difficult = [
-    :readout_fidelity,
+    # :readout_fidelity,
+    # :cutoff,
     :gate_fidelity,
     :tRotationShuttle,
     :tCNOT,
@@ -154,8 +175,8 @@ objectives_ordered_easy_to_difficult = [
 ]
 
 values_ordered_easy_to_difficult = [
-    false,
-    false,
+    # true, # the larger the easier
+    false, # the larger the more difficult
     true,
     true,
     true,
@@ -174,17 +195,7 @@ pareto_df_hard_infcut = pareto_df_hard[pareto_df_hard.cutoff .== Inf, :]
 selected_pareto_df_hard_infcut = select(
     pareto_df_hard_infcut,
     Not([
-        :generator_idx,
-        :cutoff,
-        :error_model,
-        :nlogs,
-        :runtime,
-        :std_GHZfidel,
-        :sem_GHZfidel,
-        :std_generation_time,
-        :sem_generation_time,
-        :seed,
-        :wallclock_time,
+        :pL_approx
     ]),
 )
 
@@ -204,7 +215,7 @@ df_save = DataFrame(sorted_df[
         [
             objectives_ordered_easy_to_difficult...,
             :mean_GHZfidel,
-            :mean_generation_time,
+            :mean_inter_measurement_time,
             :pL,
             :p_mem,
         ],
@@ -678,7 +689,7 @@ selected_solutions =
 
 labels = [
     "$(round(row.mean_GHZfidel; digits=4)), " *
-    "$(round(1.0 / row.mean_generation_time; digits=2))" *
+    "$(round(1.0 / row.mean_inter_measurement_time; digits=2))" *
     L"\,\mathrm{Hz}"
     for row in eachrow(selected_solutions)
 ]

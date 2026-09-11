@@ -23,26 +23,29 @@ default(
 
 
 ##
-
-@load "summary_ghz_service_v1_Steane7()_depolarizing_current_tcutsmall.jld2" df_out
-df_out[!, :mean_generation_time] = df_out.mean_generation_time * 2
-
+@load "summary_ghz_service_v1_Steane7_depolarizing_current.jld2"
 ##
+df_data_qubit_avg = combine( groupby( df_data_qubit_out, [:cutoff]),
+    :mean_GHZfidel => mean => :mean_GHZfidel,
+    :mean_inter_measurement_time => mean => :mean_inter_measurement_time
+    )
+
 code = Steane7()
 T_coh = 1.0
 
 transform!(
-    df_out,
-    [:mean_generation_time, :mean_GHZfidel] =>
+    df_data_qubit_avg,
+    [:mean_inter_measurement_time, :mean_GHZfidel] =>
         ByRow((gen_time, F_GHZ) ->
-            extract_pL(gen_time, F_GHZ, code, T_coh; gate_fidelity=0.9995, nsamples=1000_000)
+            extract_pL(gen_time, F_GHZ, code, T_coh; gate_fidelity=0.9997, nsamples=1000_000)
         ) =>
         AsTable
 )
 
 ##
 using PrettyTables
-pretty_table(df_out[:,[:generator_idx, :mean_GHZfidel, :mean_generation_time, :cutoff, :pL, :p_mem]]; backend = :latex, formatters = [fmt__round(4)])
+
+pretty_table(df_data_qubit_avg, backend = :latex, formatters = [fmt__round(4)])
 
 ##
 

@@ -600,7 +600,7 @@ xaxis = :error)  # 100 ms
 # 2D sweep: memory error × GHZ fidelity (this can take up to 1hour for 1M samples)
 # ---------------------------------------------------------------------
 
-F_gate = 1.0
+F_gate = 0.9997
 mem_errors = 10 .^ range(log10(1e-4), log10(3/4), length=20)
 
 fidelities = [
@@ -657,7 +657,7 @@ end
 @info "Finished 2D sweep in $(time() - start) seconds."
 
 ##
-@save "heatmap_data_Fgate1.0_allcodes_pmem75.jld2" results_heatmap mem_errors fidelities codess nsamples
+@save "heatmap_data_Fgate0.9997_allcodes_pmem75.jld2" results_heatmap mem_errors fidelities codess nsamples
 ##
 
 function make_pL_ratio_heatmap(
