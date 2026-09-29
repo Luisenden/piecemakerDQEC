@@ -1,6 +1,6 @@
 # see tutorial at https://qc.quantumsavory.org/stable/ECC_evaluating/
 
-# this script estimates the logical X- and Z-error probabilities of quantum error-correcting codes under a noisy memory and noisy Shor-style syndrome-extraction circuit.
+# this script estimates the logical residual error probabilities of quantum error-correcting codes under a noisy memory and noisy Shor-style syndrome-extraction circuit.
 # for each code and each memory-error probability, it performs Monte Carlo circuit (shor syndrome extraction) simulations
 
 using Plots
@@ -12,20 +12,46 @@ using Measures
 using QuantumClifford
 using QuantumClifford.ECC
 
+using QuantumClifford.ECC: AbstractECCSetup, AbstractSyndromeDecoder, batchdecode, evaluate_guesses, faults_matrix
+
 import QuantumClifford: applynoise!
+
+const GB26_2_5 = S"""IIIIIIIIIZIZIZIIIIIIIIIZII
+IIIIIIIIIIZIZIZIIIIIIIIIZI
+ZIIIIIIIIIIZIIIZIIIIIIIIIZ
+IZIIIIIIIIIIZZIIZIIIIIIIII
+ZIZIIIIIIIIIIIZIIZIIIIIIII
+IZIZIIIIIIIIIIIZIIZIIIIIII
+IIZIZIIIIIIIIIIIZIIZIIIIII
+IIIZIZIIIIIIIIIIIZIIZIIIII
+IIIIZIZIIIIIIIIIIIZIIZIIII
+IIIIIZIZIIIIIIIIIIIZIIZIII
+IIIIIIZIZIIIIIIIIIIIZIIZII
+IIIIIIIZIZIIIIIIIIIIIZIIZI
+XIIXIIIIIIIIIIIXIXIIIIIIII
+IXIIXIIIIIIIIIIIXIXIIIIIII
+IIXIIXIIIIIIIIIIIXIXIIIIII
+IIIXIIXIIIIIIIIIIIXIXIIIII
+IIIIXIIXIIIIIIIIIIIXIXIIII
+IIIIIXIIXIIIIIIIIIIIXIXIII
+IIIIIIXIIXIIIIIIIIIIIXIXII
+IIIIIIIXIIXIIIIIIIIIIIXIXI
+IIIIIIIIXIIXIIIIIIIIIIIXIX
+IIIIIIIIIXIIXXIIIIIIIIIIXI
+XIIIIIIIIIXIIIXIIIIIIIIIIX
+IXIIIIIIIIIXIXIXIIIIIIIIII"""
 
 const BB12_2_3 = S"""ZIZIIIIZIZII
 ZZIIIIIIZIZI
 IZZIIIZIIIIZ
 IIIZIZZIIIZI
 IIIZZIIZIIIZ
-IIIIZZIIZZII
 IIXXIIXXIIII
 XIIIXIIXXIII
 IXIIIXXIXIII
 XIIIIXIIIXXI
-IXIXIIIIIIXX
-IIXIXIIIIXIX"""
+IXIXIIIIIIXX"""
+
 
 function applynoise!(
     frame::QuantumClifford.PauliFrame,
@@ -52,7 +78,8 @@ function applynoise!(
 
     @inbounds for trajectory in eachindex(frame)
 
-        # With probability 1-λ, leave this trajectory unchanged.
+        # With probability 1-p, apply the depolarizing branch.
+        # The sampled Pauli may still be identity.
         rand() < noise.p || continue
 
         # Jointly sample one n-qubit Pauli.
@@ -84,10 +111,6 @@ function applynoise!(
 
     return frame
 end
-
-##
-# find the source code for the ShorSyndromeECCSetup struct in the QuantumClifford.ECC module https://raw.githubusercontent.com/QuantumSavory/QuantumClifford.jl/master/src/ecc/decoder_pipeline.jl
-using QuantumClifford.ECC: AbstractECCSetup, AbstractSyndromeDecoder
 
 function add_werner_GHZ_noise(H, F_GHZ)
     n_data = nqubits(H)
@@ -167,7 +190,7 @@ end
 function add_two_qubit_gate_fidelity(g::AbstractTwoQubitOperator, F_gate)
     qubits = affectedqubits(g)
 
-    λ_gate = 4 * (1 - F_gate) / 3
+    λ_gate = 16 * (1 - F_gate) / 15
 
     return (
         NoiseOp(
@@ -215,68 +238,68 @@ function physical_ECC_circuit(
     return circ, syndrome_bits, n_anc
 end
 
-function cevaluate_decoder(
-    d::AbstractSyndromeDecoder,
-    setup::AbstractECCSetup,
-    nsamples::Int,
-)
-    H = parity_checks(d)
+# function cevaluate_decoder(
+#     d::AbstractSyndromeDecoder,
+#     setup::AbstractECCSetup,
+#     nsamples::Int,
+# )
+#     H = parity_checks(d)
 
-    n = code_n(H)
-    k = code_k(H)
+#     n = code_n(H)
+#     k = code_k(H)
 
-    # Matrix mapping physical correction guesses to logical faults
-    O = faults_matrix(H)
+#     # Matrix mapping physical correction guesses to logical faults
+#     O = faults_matrix(H)
 
-    # Build the noisy ECC circuit for the chosen setup,
-    # e.g. ShorSyndromeECCSetup or NaiveSyndromeECCSetup.
-    physical_noisy_circ, syndrome_bits, n_anc = physical_ECC_circuit(H, setup)
+#     # Build the noisy ECC circuit for the chosen setup,
+#     # e.g. ShorSyndromeECCSetup or NaiveSyndromeECCSetup.
+#     physical_noisy_circ, syndrome_bits, n_anc = physical_ECC_circuit(H, setup)
 
-    # Perfect encoding circuit
-    encoding_circ = naive_encoding_circuit(H)
+#     # Perfect encoding circuit
+#     encoding_circ = naive_encoding_circuit(H)
 
-    # Used for testing logical Z failures by preparing/testing in X basis
-    preX = sHadamard[sHadamard(i) for i in n-k+1:n]
+#     # Used for testing logical Z failures by preparing/testing in X basis
+#     preX = sHadamard[sHadamard(i) for i in n-k+1:n]
 
-    mdH = MixedDestabilizer(H)
+#     mdH = MixedDestabilizer(H)
 
-    # Circuits that noiselessly measure logical X and logical Z observables
-    logX_circ, _, logX_bits = naive_syndrome_circuit(
-        logicalxview(mdH),
-        n_anc + 1,
-        last(syndrome_bits) + 1,
-    )
+#     # Circuits that noiselessly measure logical X and logical Z observables
+#     logX_circ, _, logX_bits = naive_syndrome_circuit(
+#         logicalxview(mdH),
+#         n_anc + 1,
+#         last(syndrome_bits) + 1,
+#     )
 
-    logZ_circ, _, logZ_bits = naive_syndrome_circuit(
-        logicalzview(mdH),
-        n_anc + 1,
-        last(syndrome_bits) + 1,
-    )
+#     logZ_circ, _, logZ_bits = naive_syndrome_circuit(
+#         logicalzview(mdH),
+#         n_anc + 1,
+#         last(syndrome_bits) + 1,
+#     )
 
-    # Logical X error:
-    # run encoding + noisy ECC + logical Z measurement
-    X_error = evaluate_decoder(
-        d,
-        nsamples,
-        vcat(encoding_circ, physical_noisy_circ, logZ_circ),
-        syndrome_bits,
-        logZ_bits,
-        O[end÷2+1:end, :],
-    )
+#     # Logical X error:
+#     # run encoding + noisy ECC + logical Z measurement
+#     X_error = evaluate_decoder(
+#         d,
+#         nsamples,
+#         vcat(encoding_circ, physical_noisy_circ, logZ_circ),
+#         syndrome_bits,
+#         logZ_bits,
+#         O[end÷2+1:end, :],
+#     )
 
-    # Logical Z error:
-    # prepare in X basis, then run encoding + noisy ECC + logical X measurement
-    Z_error = evaluate_decoder(
-        d,
-        nsamples,
-        vcat(preX, encoding_circ, physical_noisy_circ, logX_circ),
-        syndrome_bits,
-        logX_bits,
-        O[1:end÷2, :],
-    )
+#     # Logical Z error:
+#     # prepare in X basis, then run encoding + noisy ECC + logical X measurement
+#     Z_error = evaluate_decoder(
+#         d,
+#         nsamples,
+#         vcat(preX, encoding_circ, physical_noisy_circ, logX_circ),
+#         syndrome_bits,
+#         logX_bits,
+#         O[1:end÷2, :],
+#     )
 
-    return X_error, Z_error
-end
+#     return X_error, Z_error
+# end
 
 function cevaluate_decoder_pL(
     d::AbstractSyndromeDecoder,
@@ -347,21 +370,168 @@ function cevaluate_decoder_pL(
             O,
         )
 
-    return pL
+    nlfails = round(Int, pL * nsamples)
+
+    return (pL = pL, nlfails = nlfails)
 end
 
 p_mem(Δt_GHZ; T_coh=1.0) = (3/4) * (1.0 - exp(-Δt_GHZ / T_coh))
 
-function extract_pL(gen_time, F_GHZ, code, T_coh; gate_fidelity=1.0, nsamples=1000_000)
-    p_mem_val = p_mem(gen_time; T_coh=T_coh)  # generation time per stabilizer generator takes twice as long
+# binary search to find break-even infidelity for a given memory error probability in a code
 
-    setup = CShorSyndromeECCSetup(p_mem_val, gate_fidelity, F_GHZ)
-    decoder = CSSTableDecoder(code)
+function wilson_interval(k, N; z=1.645) # 90% confidence interval
+    # defines uncertainty interval for a binomial proportion using the Wilson score interval
+    p̂ = k / N
 
-    r = cevaluate_decoder_pL(decoder, setup, nsamples)
+    D = 1 + z^2 / N
+
+    center =
+        (p̂ + z^2 / (2N)) / D
+
+    halfwidth =
+        z / D *
+        sqrt(
+            p̂ * (1 - p̂) / N +
+            z^2 / (4N^2)
+        )
 
     return (
-        pL = r,
-        p_mem = p_mem_val,
+        max(0.0, center - halfwidth),
+        min(1.0, center + halfwidth),
     )
+end
+
+
+function classify_point(
+    # classifies wether the logical error probability pL is above or below the physical memory error probability p_mem
+    decoder,
+    p_mem,
+    gate_fidelity,
+    F_ghz,
+    nsamples_start = 1_000,
+    nsamples_max = 1000_000,
+)
+
+    setup = CShorSyndromeECCSetup(p_mem, gate_fidelity, F_ghz)
+
+    nsamples = nsamples_start
+
+    while true
+
+        res = cevaluate_decoder_pL(
+            decoder,
+            setup,
+            nsamples,
+        )
+
+        lo, hi = wilson_interval(
+            res.nlfails,
+            nsamples,
+        )
+
+        if hi < p_mem
+            return (
+                status = :interval_below,
+                result = res,
+                ci = (lo, hi),
+            )
+
+        elseif lo > p_mem
+            return (
+                status = :interval_above,
+                result = res,
+                ci = (lo, hi),
+            )
+
+        elseif nsamples >= nsamples_max
+            return (
+                status = :interval_uncertain,
+                result = res,
+                ci = (lo, hi),
+            )
+        end
+
+        nsamples = min(10 * nsamples, nsamples_max)
+    end
+end
+
+function find_break_even(
+    decoder,
+    p_mem,
+    gate_fidelity,
+    logeps_min = -6.0,
+    logeps_max = -1.0,
+    logeps_tol = 0.05,
+    nsamples_start = 1_000,
+    nsamples_max = 1_000_000,
+)
+
+    lo = logeps_min
+    hi = logeps_max
+
+    while hi - lo > logeps_tol
+
+        mid = (lo + hi) / 2
+
+        eps_ghz = 10.0^mid
+        F_ghz = 1 - eps_ghz
+
+        classification = classify_point(
+            decoder,
+            p_mem,
+            gate_fidelity,
+            F_ghz;
+            nsamples_start = nsamples_start,
+            nsamples_max = nsamples_max,
+        )
+
+        if classification.status == :interval_below
+            # pL < p_mem:
+            # GHZ state can be made worse
+            lo = mid
+
+        elseif classification.status == :interval_above
+            # pL > p_mem:
+            # GHZ state must be better
+            hi = mid
+
+        else
+            if hi - lo <= logeps_tol
+                return (
+                    status = :converged_statistically_unresolved,
+                    logeps = mid,
+                    eps_ghz = eps_ghz,
+                    bracket = (lo, hi),
+                    bracket_width = hi - lo,
+                    details = classification,
+                )
+            else
+                return (
+                    status = :uncertain,
+                    logeps = mid,
+                    eps_ghz = eps_ghz,
+                    bracket = (lo, hi),
+                    bracket_width = hi - lo,
+                    details = classification,
+                )
+            end
+        end
+    end
+
+    logeps = (lo + hi) / 2
+    eps_ghz = 10.0^logeps
+
+    return (
+        status = :converged,
+        logeps = logeps,
+        eps_ghz = eps_ghz,
+    )
+end
+
+# calculate cycle time for a given memory error probability p_mem and coherence time T_coh
+function t_cycle(p_mem; T_coh=1.0)
+    0 <= p_mem < 0.75 ||
+        throw(DomainError(p_mem, "p_mem must satisfy 0 ≤ p_mem < 0.75"))
+
+    return -T_coh * log1p(-4p_mem / 3)
 end

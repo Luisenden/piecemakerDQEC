@@ -9,7 +9,7 @@ using Logging
 
 ##
 
-folder = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1"
+folder = "/Users/localadmin/Library/CloudStorage/OneDrive-DelftUniversityofTechnology/4_backup_project_piecemakerDQEC/output_v1_cutoff/output_v1/"
 ## this can take up to a minute 
 columns =  [:attempt_time, :T_coherence, :error_model, :tRotationShuttle, :tCNOT, :gate_fidelity, 
             :tReadout, :readout_fidelity, :runtime, :wallclock_time, :nlogs]
@@ -58,15 +58,6 @@ df_data_qubit_avg = combine( groupby( df_data_take, [axis_order...; :cutoff]),
     :mean_inter_measurement_time => mean => :mean_inter_measurement_time
     )
 
-##
-files = readdir(folder)
-indices = [
-    parse(Int, match(r"_(\d+)\.jld2$", str).captures[1])
-    for str in files
-]
-all_indices = 1:10800
-missing_indices = setdiff(all_indices, indices)
-
 
 ##
 code = Steane7()
@@ -75,8 +66,22 @@ df = df_data_qubit_avg
 ##
 df[!, :p_mem] = p_mem.(df.mean_inter_measurement_time; T_coh=T_coh)
 df[!, :pL_approx] = pL_fit.(df.p_mem, 1.0 .- df.mean_GHZfidel)
-
+##
 df_both_targets = df[(df.pL_approx .<= 1.4.*df.p_mem), :]
+##
+code = Steane7()
+T_coh = 1.0
+transform!(
+    df_both_targets,
+    [:mean_inter_measurement_time, :mean_GHZfidel, :gate_fidelity] =>
+        ByRow((gen_time, F_GHZ, gate_fidelity) ->
+            extract_pL(gen_time, F_GHZ, code, T_coh; gate_fidelity=gate_fidelity, nsamples=10_000)
+        ) =>
+        AsTable
+)
+
+##
+df_both_targets = df_both_targets[(df_both_targets.pL .<= df_both_targets.p_mem), :]
 
 ## pareto front analysis (this can take several minutes)
 
@@ -142,28 +147,11 @@ function pareto_front(df, objectives)
 end
 
 pareto_df = pareto_front(df_both_targets, objectives)
-## add simulated logical error probability to pareto_df
-
-code = Steane7()
-T_coh = 1.0
-transform!(
-    pareto_df,
-    [:mean_inter_measurement_time, :mean_GHZfidel] =>
-        ByRow((gen_time, F_GHZ) ->
-            extract_pL(gen_time, F_GHZ, code, T_coh; gate_fidelity=0.9997, nsamples=1000_000)
-        ) =>
-        AsTable
-)
-
-
-##
-
-pareto_df_hard = pareto_df[(pareto_df.pL .<= pareto_df.p_mem), :]
 
 ##
 objectives_ordered_easy_to_difficult = [
     # :readout_fidelity,
-    # :cutoff,
+    :cutoff,
     :gate_fidelity,
     :tRotationShuttle,
     :tCNOT,
@@ -175,9 +163,9 @@ objectives_ordered_easy_to_difficult = [
 ]
 
 values_ordered_easy_to_difficult = [
-    # true, # the larger the easier
+    false, 
     false, # the larger the more difficult
-    true,
+    true, # the larger the easier
     true,
     true,
     false,
@@ -190,17 +178,16 @@ values_ordered_easy_to_difficult = [
 objectives_ordered_difficult_to_easy = reverse(objectives_ordered_easy_to_difficult)
 values_ordered_difficult_to_easy = reverse(values_ordered_easy_to_difficult)
 
-pareto_df_hard_infcut = pareto_df_hard[pareto_df_hard.cutoff .== Inf, :]
 
-selected_pareto_df_hard_infcut = select(
-    pareto_df_hard_infcut,
+selected_pareto_df = select(
+    pareto_df,
     Not([
         :pL_approx
     ]),
 )
 
 sorted_df = sort(
-    selected_pareto_df_hard_infcut,
+    selected_pareto_df,
     [
         order(col, rev=rev)
         for (col, rev) in zip(
@@ -220,9 +207,19 @@ df_save = DataFrame(sorted_df[
             :p_mem,
         ],
     ])
+##
+CSV.write("pareto_data_sorted_new.csv", df_save)
 
-CSV.write("pareto_data_sorted.csv", df_save)
-
+code = Steane7()
+T_coh = 1.0
+transform!(
+    df_save,
+    [:mean_inter_measurement_time, :mean_GHZfidel, :gate_fidelity] =>
+        ByRow((gen_time, F_GHZ, gate_fidelity) ->
+            extract_pL(gen_time, F_GHZ, code, T_coh; gate_fidelity=gate_fidelity, nsamples=100_000)
+        ) =>
+        AsTable
+)
 ##
 #show(df_save[df_save.p_mem .== maximum(df_save.p_mem), :], allcols=true, allrows=true)
 
