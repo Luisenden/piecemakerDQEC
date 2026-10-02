@@ -2,8 +2,9 @@ const code = "Steane713"
 const error_model = "depolarizing"
 
 index = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 1
-k_max = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 6
-output_path = length(ARGS) >= 3 ? ARGS[5] : "./"
+k_max = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 50
+target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 2000
+output_path = length(ARGS) >= 4 ? ARGS[4] : "./"
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
@@ -17,7 +18,7 @@ const p_mem_max = 0.08660254037844387#find_pmem_max(qec_parity_checks(code), gat
 @load joinpath(@__DIR__, "step2_pruned_timing_configurations_$(code).jld2") members
 member = members[index]
 ##
-sim_kwargs = (seed = 1234, target_samples = 2000, max_wallclock = 60.0)
+sim_kwargs = (seed = 1234, target_samples = target_samples, max_wallclock = 60.0)
 timing_cache = Dict{Any, Any}()
 start = time()
 U_tc = cutoff_range!(timing_cache, member, τ_max; k_max = k_max, patience = 1, sim_kwargs = sim_kwargs)
