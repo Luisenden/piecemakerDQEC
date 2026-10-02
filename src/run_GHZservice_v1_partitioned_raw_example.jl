@@ -6,17 +6,18 @@ const error_model = "depolarizing"
 ##
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
+include(joinpath(@__DIR__, "GHZfidelity_closedform.jl"))
 ##
 start = time()
 result = run_single_configuration(
-    F_link = 0.97,
+    F_link = 1.0, # (dummy)
     link_success_prob = 1e-3,
     attempt_time = 1e-6,
-    T_coherence = Inf,
+    T_coherence = Inf, # (dummy)
     Δt_CNOTgate = 100e-6,
-    gate_fidelity = 0.9997,
+    gate_fidelity = 1.0, # (dummy)
     Δt_readout = 1e-3,
-    readout_fidelity = 1.0,
+    readout_fidelity = 1.0, # (dummy)
     Δt_rotation_shuttle = 100e-6,
     cutoff = Inf,
 
@@ -30,11 +31,8 @@ df_raw = result.raw_events
 println("Runtime: $(time() - start) seconds")
 ##
 
-if code == "Steane713"
-    required_count = 2
-else
-    required_count = 1
-end
+# Completions per generator that make one QEC round: Steane checks share X/Z supports.
+required_count = code == "Steane713" ? 2 : 1
 
 # All stabilizer/generator indices expected
 all_generators = collect(eachindex(GENERATORS))
@@ -59,24 +57,20 @@ end
 pmem = 0.04
 t_max = t_cycle(pmem; T_coh = 1.0)
 @info t_max
-@info mean(diff(timesteps_markers))
+t_cycle = mean(diff(timesteps_markers))
 ##
 
-include(joinpath(@__DIR__, "GHZfromtrace.jl"))
-bellpair_times = Matrix{Float64}(df_raw[:, [:bellpair_1, :bellpair_2, :bellpair_3, :bellpair_4]])
-
+# Exact per-GHZ fidelity from the logged timing trace (b_j, c_j, g_j, piecemaker readout,
+# consumption). All times come from the event simulation itself, so queueing behind other
+# GHZ attempts is included. The noise parameters are applied here; the event simulation
+# itself runs noise-free (T_coherence = Inf, perfect pairs).
 start = time()
-df_raw.fidelity = [
-    simulate_piecemaker_trace(
-        collect(row);
-        T_coherence = 1.0,
-        F_link = 1.0,
-        t_rotation_shuttle = 0.0,
-        t_CNOT = 0.1,
-        F_CNOT = 1.0,
-        t_readout = 0.0,
-        F_readout = 1.0,
-    )
-    for row in eachrow(bellpair_times)
-]
-println("Runtime: $(time() - start) seconds")
+df_raw.fidelity = ghz_fidelities_from_log(df_raw;
+    T_coherence = 1.0,          # τ (depolarizing) or T2 (dephasing), same units as the simulation (s)
+    memory = :depolarizing,     # or :dephasing
+    F_link = 0.97,
+    F_CNOT = 0.9997,
+    F_readout = 1.0,
+)
+println("Closed-form fidelities: $(time() - start) seconds for $(nrow(df_raw)) GHZ states")
+@info "mean GHZ fidelity" mean(df_raw.fidelity)

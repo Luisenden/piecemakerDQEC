@@ -15,44 +15,31 @@ using Random
 
 const codes = Dict(
 
+    # Supports follow the row order of the corresponding parity-check tableau, so
+    # generator_idx g indexes row g of H. Steane: QuantumClifford Steane7() labeling;
+    # support g carries both X-check row g and Z-check row g+3 (CSS, shared supports).
     "Steane713" => (7, [
-        [4, 5, 6, 7], 
-        [2, 3, 6, 7],  
-        [1, 3, 5, 7], 
+        [4, 5, 6, 7],
+        [2, 3, 6, 7],
+        [1, 3, 5, 7],
     ]),
 
-    # [[12,2,3]] bivariate-bicycle code: 10 independent weight-4 generators
+    # [[12,2,3]] bivariate-bicycle code; order = rows of BB12_2_3 in utils_pseudothreshold.jl
     "BB12_2_3" => (12, [
-        [1, 3, 8, 10],  [1, 2, 9, 11],  [2, 3, 7, 12],  [4, 6, 7, 11],  [4, 5, 8, 12],   # rows 1–5: Z-type
-        [3, 4, 7, 8],   [1, 5, 8, 9],   [2, 6, 7, 9],   [1, 6, 10, 11], [2, 4, 11, 12],  # rows 6–10: X-type
+        [1, 3, 8, 10], [1, 2, 9, 11], [2, 3, 7, 12], [4, 6, 7, 11], [4, 5, 8, 12],   # Z-type
+        [3, 4, 7, 8],  [1, 5, 8, 9],  [2, 6, 7, 9],  [1, 6, 10, 11], [2, 4, 11, 12], # X-type
     ]),
 
+    # [[26,2,5]] generalized bicycle code, l = 13, a = 1 + x^5, b = 1 + x
+    # (Wang & Pryadko, arXiv:2203.17216; github.com/QEC-pages/GB-codes), up to qubit relabeling;
+    # order = rows of GB26_2_5 in utils_pseudothreshold.jl
     "GB26_2_5" => (26, [
-        [10, 12, 14, 24],  # row 1: Z-type  
-        [11, 13, 15, 25],  # row 2: Z-type 
-        [1, 12, 16, 26],   # row 3: Z-type
-        [2, 13, 14, 17],   # row 4: Z-type
-        [1, 3, 15, 18],    # row 5: Z-type
-        [2, 4, 16, 19],    # row 6: Z-type
-        [3, 5, 17, 20],    # row 7: Z-type
-        [4, 6, 18, 21],    # row 8: Z-type
-        [5, 7, 19, 22],    # row 9: Z-type
-        [6, 8, 20, 23],    # row 10: Z-type
-        [7, 9, 21, 24],    # row 11: Z-type
-        [8, 10, 22, 25],   # row 12: Z-type
-
-        [1, 4, 16, 18],    # row 13: X-type
-        [2, 5, 17, 19],    # row 14: X-type
-        [3, 6, 18, 20],    # row 15: X-type
-        [4, 7, 19, 21],    # row 16: X-type
-        [5, 8, 20, 22],    # row 17: X-type
-        [6, 9, 21, 23],    # row 18: X-type
-        [7, 10, 22, 24],   # row 19: X-type
-        [8, 11, 23, 25],   # row 20: X-type
-        [9, 12, 24, 26],   # row 21: X-type
-        [10, 13, 14, 25],  # row 22: X-type
-        [1, 11, 15, 26],   # row 23: X-type
-        [2, 12, 14, 16],   # row 24: X-type
+        [10, 12, 14, 24], [11, 13, 15, 25], [1, 12, 16, 26], [2, 13, 14, 17],
+        [1, 3, 15, 18],   [2, 4, 16, 19],   [3, 5, 17, 20],  [4, 6, 18, 21],
+        [5, 7, 19, 22],   [6, 8, 20, 23],   [7, 9, 21, 24],  [8, 10, 22, 25],   # Z-type
+        [1, 4, 16, 18],   [2, 5, 17, 19],   [3, 6, 18, 20],  [4, 7, 19, 21],
+        [5, 8, 20, 22],   [6, 9, 21, 23],   [7, 10, 22, 24], [8, 11, 23, 25],
+        [9, 12, 24, 26],  [10, 13, 14, 25], [1, 11, 15, 26], [2, 12, 14, 16],   # X-type
     ]),
 )
 
@@ -78,7 +65,7 @@ const NODE_PARTITIONS = Dict(
     ],
 
     # 12 nodes. Every weight-4 generator spans four distinct nodes.
-    # Stabilizer loads: [9, 9, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8].
+    # Stabilizer loads: [9, 10, 8, 8, 8, 8, 7, 8, 7, 8, 8, 7].
     "GB26_2_5" => [
         [3, 9, 11],
         [13, 23, 24],
@@ -125,13 +112,13 @@ const GENERATOR_TO_NODES = [
 ) "Invalid node partition: at least one stabilizer contains multiple data qubits hosted by the same node."
 
 const paulis = (nothing, X, Y, Z)
-@inline function sample_depol2q(gate_fidelity::Float64)
-    λ = 16/15 * (1-gate_fidelity)
-    rand() < (1-λ) && return (nothing, nothing)
-    return (rand(paulis), rand(paulis))
-end
+# @inline function sample_depol2q(gate_fidelity::Float64)
+#     λ = 4/3 * (1-gate_fidelity)
+#     rand() < (1-λ) && return (nothing, nothing)
+#     return (rand(paulis), rand(paulis))
+# end
 
-# const ghzs = [ghz(k) for k in 1:maximum(length.(GENERATORS))] # cache required GHZ sizes
+const ghzs = [ghz(k) for k in 1:maximum(length.(GENERATORS))] # cache required GHZ sizes
 
 # Network-level lookup tables. These are indexed by physical node / switch slot,
 # not by data-qubit index.
@@ -145,12 +132,40 @@ const NODE_TO_NODEINCOMMON = Dict(
     for node_idx in 1:N_NODES
 )
 
+# Per-Bell-pair timing record, kept outside the QuantumSavory tag system.
+#   birth: listener-observed Bell-pair birth time (b_j)
+#   cnot:  time the fusion CNOT is applied (c_j); NaN for the piecemaker pair
+#   meas:  time the incoming switch qubit is Z-measured, i.e. end of CNOT (g_j); NaN for the piecemaker pair
+mutable struct PairTimes
+    birth::Float64
+    cnot::Float64
+    meas::Float64
+end
+
+# One row per successfully consumed weight-4 GHZ state. Pairs are in FUSION order:
+# pair 1 is the piecemaker, pairs 2..4 are ordered by their CNOT time.
+#   timesteps: consumption time t_end (after the piecemaker readout wait)
+#   t_pm_meas: time the piecemaker is X-measured
 const RawGHZRow = NamedTuple{
-    (:timesteps, :generator_idx, :bellpair_1, :bellpair_2, :bellpair_3, :bellpair_4), #:GHZfidel
-    Tuple{Float64, Int, Float64, Float64, Float64, Float64}#Float64,
+    (:timesteps, :generator_idx, :t_pm_meas,
+     :bellpair_1, :bellpair_2, :bellpair_3, :bellpair_4,
+     :cnot_2, :cnot_3, :cnot_4,
+     :meas_2, :meas_3, :meas_4),
+    Tuple{Float64, Int, Float64,
+          Float64, Float64, Float64, Float64,
+          Float64, Float64, Float64,
+          Float64, Float64, Float64},
 }
 
 @info "Using code $(code) with $(N_DATA) data qubits on $(N_NODES) physical nodes; node partition = $(NODE_PARTITION)"
+
+# function noisy_bell_state(target_fidelity::Float64=0.97)
+#     λ = (4 * target_fidelity - 1) / 3
+#     perfect_pair::StabilizerState = StabilizerState("XX ZZ")
+#     perfect_pair_dm = SProjector(perfect_pair)
+#     mixed_dm = MixedState(SProjector(perfect_pair))
+#     return λ * perfect_pair_dm + (1 - λ) * mixed_dm
+# end
 
 struct SwitchSlotInfo
     switchslot_idx::Int
@@ -163,7 +178,7 @@ function next_attempt_id!(counter)
     return counter[]
 end
 
-@resumable function consumer(sim, net, pm_slot::RegRef, gen_set_index::Int, iscutoff::Bool, log_data::Vector{RawGHZRow}, birth_time_by_tagid::Dict{Int,Float64}, Δt_readout::Float64, readout_fidelity::Float64)
+@resumable function consumer(sim, net, pm_slot::RegRef, gen_set_index::Int, iscutoff::Bool, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes}, Δt_readout::Float64, readout_fidelity::Float64)
 
     msgs = queryall(net[1], :PartOfGenSet, gen_set_index, pm_slot.idx, ❓; filo = false)
     
@@ -194,8 +209,12 @@ end
 
     # The PartOfGenSet tag stores the SwitchSlotInfo tag id in field 4.
     # Birth times are logging metadata kept separately from QuantumSavory tags.
-    @assert all(haskey(birth_time_by_tagid, Int(tagid)) for tagid in tagids) "Missing Bell-pair birth-time log entry."
-    bellpair_birth_times = sort(Float64[birth_time_by_tagid[Int(tagid)] for tagid in tagids])
+    @assert all(haskey(pair_times, Int(tagid)) for tagid in tagids) "Missing Bell-pair timing log entry."
+    # Fusion order: piecemaker pair first, then the fused pairs by CNOT time.
+    # (Hold references before the dictionary entries are deleted below.)
+    pm_tagid = Int(only(msg.tag[4] for msg in msgs if msg.slot.idx == pm_slot.idx))
+    fused_tagids = sort([Int(t) for t in tagids if Int(t) != pm_tagid]; by = t -> pair_times[t].cnot)
+    ordered_times = PairTimes[pair_times[pm_tagid]; [pair_times[t] for t in fused_tagids]]
 
     clientslots_to_measure = [net[1+switchslot_idx][clientslot_idx] for (switchslot_idx, clientslot_idx) in zip([msg.slot.idx for msg in msgs], clientslot_idcs)]
     @debug "Measuring client qubits at slots $(clientslot_idcs) to consume GHZ state for generator set $(gen_set_index)"
@@ -203,6 +222,7 @@ end
     @yield reduce(&, lock.(clientslots_to_measure))
     @yield lock(pm_slot)
     @debug "Projecting out piecemaker qubit at slot $(pm_slot.idx) to consume GHZ state for generator set $(gen_set_index)"
+    t_pm_meas = now(sim)
     res = project_traceout!(pm_slot, σˣ)
     # if rand() > readout_fidelity
     #     res = 3 - res
@@ -225,7 +245,7 @@ end
     for msg in clientslot_idcs_msgs
         @debug "Deleting tag $(msg.tag) with id $(msg.id) at slot $(msg.slot)"
         untag!(net[1], msg.id)
-        delete!(birth_time_by_tagid, Int(msg.id))
+        delete!(pair_times, Int(msg.id))
         unlock(net[1 + msg.slot.idx][msg.tag[3]])
     end
     untag!(net[1], pm_msg.id)
@@ -233,20 +253,22 @@ end
     unlock(pm_slot)
 
     # One raw row per SUCCESSFULLY completed GHZ state. Cutoff-discarded partial
-    # constructions are deliberately not logged. The birth times are the
-    # listener-observed Bell-pair birth times stored in birth_time_by_tagid.
-    # Sort them chronologically and record consecutive gaps.
+    # constructions are deliberately not logged. Per pair we log the listener-observed
+    # birth time b_j, the fusion CNOT time c_j and the Z-measurement time g_j, plus the
+    # piecemaker X-measurement time and the consumption time: exactly the inputs of
+    # ghz_fidelity_closedform (GHZfidelity_closedform.jl).
     if !iscutoff
-        @assert length(bellpair_birth_times) == 4 "Raw output currently assumes weight-4 GHZ constructions."
-
+        @assert length(ordered_times) == 4 "Raw output currently assumes weight-4 GHZ constructions."
+        @assert isnan(ordered_times[1].cnot) "The piecemaker pair must not have a CNOT time."
+        @assert all(!isnan(pt.cnot) && !isnan(pt.meas) for pt in ordered_times[2:4]) "Missing fusion times."
+        pt = ordered_times
         push!(log_data, (
             timesteps = time_of_consumption,
             generator_idx = gen_set_index,
-            # GHZfidel = fidelity,
-            bellpair_1= bellpair_birth_times[1],
-            bellpair_2 = bellpair_birth_times[2],
-            bellpair_3 = bellpair_birth_times[3],
-            bellpair_4 = bellpair_birth_times[4],
+            t_pm_meas = t_pm_meas,
+            bellpair_1 = pt[1].birth, bellpair_2 = pt[2].birth, bellpair_3 = pt[3].birth, bellpair_4 = pt[4].birth,
+            cnot_2 = pt[2].cnot, cnot_3 = pt[3].cnot, cnot_4 = pt[4].cnot,
+            meas_2 = pt[2].meas, meas_3 = pt[3].meas, meas_4 = pt[4].meas,
         ))
     end
 end
@@ -327,7 +349,7 @@ end
     Δt_rotation_shuttle::Float64,
     global_pause::Ref{Float64},
     log_data::Vector{RawGHZRow},
-    birth_time_by_tagid::Dict{Int,Float64},
+    pair_times::Dict{Int,PairTimes},
 )
     while !isempty(pending_batches)
         msgs, batch_time = popfirst!(pending_batches)
@@ -339,14 +361,14 @@ end
         for msg in msgs
             clientslot_idx = msg.tag[3]
             # Keep the original SwitchSlotInfo tag unchanged; cutoff logic uses its timestamp.
-            tagid = tag!(msg.slot, Tag(SwitchSlotInfo, msg.slot.idx, clientslot_idx, now(sim)))
+            tagid = tag!(msg.slot, Tag(SwitchSlotInfo, msg.slot.idx, clientslot_idx, batch_time))
             # Store the listener-observed Bell-pair birth time outside the Tag system.
-            birth_time_by_tagid[Int(tagid)] = batch_time
+            pair_times[Int(tagid)] = PairTimes(batch_time, NaN, NaN)
             @yield timeout(sim, Δt_rotation_shuttle) # this is the physical switch pause for accepting/rotating/shuttling this batch
             # get corresponding slot idx at client
             # tag with switch slot info
-            @yield @process SwitchSlotProt(sim, net, msg.slot.idx, clientslot_idx, Int(tagid), attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, log_data, birth_time_by_tagid)
-            @yield @process CutoffDiscardProt(sim, net, cutoff, log_data, birth_time_by_tagid, Δt_readout, readout_fidelity)
+            @yield @process SwitchSlotProt(sim, net, msg.slot.idx, clientslot_idx, Int(tagid), attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, log_data, pair_times)
+            @yield @process CutoffDiscardProt(sim, net, cutoff, log_data, pair_times, Δt_readout, readout_fidelity)
         end
     end
 
@@ -366,7 +388,7 @@ end
     Δt_rotation_shuttle::Float64,
     global_pause::Ref{Float64},
     log_data::Vector{RawGHZRow},
-    birth_time_by_tagid::Dict{Int,Float64},
+    pair_times::Dict{Int,PairTimes},
 )
     pending_batches = Tuple{Vector{Any}, Float64}[]
     worker_running = Ref(false)
@@ -407,14 +429,14 @@ end
                 Δt_rotation_shuttle,
                 global_pause,
                 log_data,
-                birth_time_by_tagid,
+                pair_times,
             )
         end
     end
 end
 
 
-@resumable function CutoffDiscardProt(sim, net, cutoff::Float64, log_data::Vector{RawGHZRow}, birth_time_by_tagid::Dict{Int,Float64}, Δt_readout::Float64, readout_fidelity::Float64)
+@resumable function CutoffDiscardProt(sim, net, cutoff::Float64, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes}, Δt_readout::Float64, readout_fidelity::Float64)
     # this process is triggered by the switch_listener and checks if there are any switch slots that have been stored for longer than the cutoff time.
 
     msgs = queryall(net[1], :isPiecemaker, ❓; assigned = true, filo = false)
@@ -427,13 +449,13 @@ end
             gensetinfo_msg = query(msg.slot, :PartOfGenSet, ❓, ❓, ❓; filo = false)
             pm_slot_idx = gensetinfo_msg.tag[3]
             genset_idx = gensetinfo_msg.tag[2]
-            @yield @process consumer(sim, net, net[1][pm_slot_idx], genset_idx, true, log_data, birth_time_by_tagid, Δt_readout, readout_fidelity) # if the cutoff time has been exceeded, we consume the GHZ state that was being built with the corresponding piecemaker slot to free up the switch slots
+            @yield @process consumer(sim, net, net[1][pm_slot_idx], genset_idx, true, log_data, pair_times, Δt_readout, readout_fidelity) # if the cutoff time has been exceeded, we consume the GHZ state that was being built with the corresponding piecemaker slot to free up the switch slots
             break
         end
     end
 end
 
-@resumable function SwitchSlotProt(sim, net, switchslot_idx::Int, clientslot_idx::Int, tagid::Int, attempt_counter::Ref{Int}, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, log_data::Vector{RawGHZRow}, birth_time_by_tagid::Dict{Int,Float64})
+@resumable function SwitchSlotProt(sim, net, switchslot_idx::Int, clientslot_idx::Int, tagid::Int, attempt_counter::Ref{Int}, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes})
     # this is a sequential protocol, meaning that it occupies the switch slots for its duration until fusion is complete
     # first it checks for all possible GHZ attempts to fuse with (using tag PartOfGenSet)
     # if the answer is (an)other slot(s) it calls fusion for the oldest piecemaker slot
@@ -494,31 +516,33 @@ end
             unlock(net[1][switchslot_idx])
         else
             # in this case we found a piecemaker slot within a suitable generator set and fuse with it
-            @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity)
+            @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, pair_times)
 
             # check if after fusion the GHZ state contains all nodes required by this generator
             msgs = queryall(net[1], :PartOfGenSet, gen_set_idx, pmslot_to_fuse_with.idx, ❓; filo = false)
             if length(msgs) == length(GENERATOR_TO_NODES[gen_set_idx])
-                @yield @process consumer(sim, net, pmslot_to_fuse_with, gen_set_idx, false, log_data, birth_time_by_tagid, Δt_readout, readout_fidelity) # if the fused state is complete, run the consume listener to consume it;
+                @yield @process consumer(sim, net, pmslot_to_fuse_with, gen_set_idx, false, log_data, pair_times, Δt_readout, readout_fidelity) # if the fused state is complete, run the consume listener to consume it;
             end
         end
     end
 end
 
-@resumable function fusion(sim, net, piecemaker_slot::RegRef, clientswitch_slot::RegRef, client_slot::RegRef, gen_set_idx::Int, tagid::Int, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64)
+@resumable function fusion(sim, net, piecemaker_slot::RegRef, clientswitch_slot::RegRef, client_slot::RegRef, gen_set_idx::Int, tagid::Int, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, pair_times::Dict{Int,PairTimes})
     @yield lock(piecemaker_slot) & lock(clientswitch_slot) & lock(client_slot)
+    pair_times[tagid].cnot = now(sim)   # c_j
     apply!((piecemaker_slot, clientswitch_slot), CNOT)
     @yield timeout(sim, Δt_CNOTgate)
-    noisygate = sample_depol2q(gate_fidelity)
-    !isnothing(noisygate[1]) && apply!(piecemaker_slot, noisygate[1])
-    !isnothing(noisygate[2]) && apply!(clientswitch_slot, noisygate[2])
+    pair_times[tagid].meas = now(sim)   # g_j: gate end = Z-measurement of the incoming switch qubit
+    # noisygate = sample_depol2q(gate_fidelity)
+    # !isnothing(noisygate[1]) && apply!(piecemaker_slot, noisygate[1])
+    # !isnothing(noisygate[2]) && apply!(clientswitch_slot, noisygate[2])
 
     res = project_traceout!(clientswitch_slot, σᶻ)
-    if rand() > readout_fidelity
-        res = 3 - res
-    end
+    # if rand() > readout_fidelity
+    #     res = 3 - res
+    # end
     @yield timeout(sim, Δt_readout)
-    res == 2 && apply!(client_slot, X) # TODO: correction gate is now faster than light, add timeout!
+    # res == 2 && apply!(client_slot, X) # TODO: correction gate is now faster than light, add timeout!
     tag!(clientswitch_slot, Tag(:PartOfGenSet, gen_set_idx, piecemaker_slot.idx, tagid))
     unlock(piecemaker_slot)
     unlock(clientswitch_slot)
@@ -564,7 +588,7 @@ function prepare_sim(n_nodes, T_link::Float64, F_link::Float64, link_success_pro
     states_representation = CliffordRepr()#QuantumOpticsRepr()
     @debug "Preparing simulation with parameters: n_nodes=$(n_nodes), T_link=$(T_link), cutoff=$(cutoff), F_link=$(F_link), link_success_prob=$(link_success_prob), attempt_time=$(attempt_t)"
     
-    noise_model = error_model == "dephasing" ? T2Dephasing(T_link) : Depolarization(T_link)
+    # noise_model = error_model == "dephasing" ? T2Dephasing(T_link) : Depolarization(T_link)
 
     # Network setup
     switch = Register(
@@ -587,13 +611,12 @@ function prepare_sim(n_nodes, T_link::Float64, F_link::Float64, link_success_pro
 
     attempt_counter = Ref(0)
     global_pause = Ref(0.0)
-    birth_time_by_tagid = Dict{Int,Float64}()
+    pair_times = Dict{Int,PairTimes}()
 
-    @process switch_listener(sim, net, attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, cutoff, Δt_rotation_shuttle, global_pause, log_data, birth_time_by_tagid)
+    @process switch_listener(sim, net, attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, cutoff, Δt_rotation_shuttle, global_pause, log_data, pair_times)
     @process naive_entangler(sim, net, n_nodes, F_link, link_success_prob, attempt_t, Δt_rotation_shuttle)
     return sim
 end
-
 
 
 function get_cutoff(T_coherence, error_budget)
@@ -628,14 +651,9 @@ end
 
 Run exactly one physical/network parameter setting and one cutoff value.
 No summary statistics are constructed. The returned `raw_events` DataFrame has
-one row per successfully consumed GHZ state with columns:
-
-- `timesteps`: GHZ consumption/completion time
-- `generator_idx`: stabilizer/generator index
-- `GHZfidel`: GHZ fidelity measured immediately before consumption
-- `bellpair_dt_12`: second Bell-pair birth time minus first
-- `bellpair_dt_23`: third minus second
-- `bellpair_dt_34`: fourth minus third
+one row per successfully consumed GHZ state; see `RawGHZRow` for the columns.
+Pairs are listed in fusion order (piecemaker first). Pass the rows to
+`ghz_fidelities_from_log` (GHZfidelity_closedform.jl) to obtain fidelities.
 """
 function run_single_configuration(;
     F_link::Float64,
@@ -682,7 +700,6 @@ function run_single_configuration(;
 
         if check_convergence(log_data, GENERATORS; min_samples = target_samples)
             converged = true
-            @info "Reached convergence"
             break
         end
 
