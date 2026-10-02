@@ -3,6 +3,7 @@ const error_model = "depolarizing"
 
 index = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 1
 k_max = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 6
+output_path = length(ARGS) >= 3 ? ARGS[5] : "./"
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
@@ -22,7 +23,7 @@ start = time()
 U_tc = cutoff_range!(timing_cache, member, τ_max; k_max = k_max, patience = 1, sim_kwargs = sim_kwargs)
 step3_table = summary_table(U_tc)
 println("Step 3: $(nrow(step3_table)) timing-cutoff pairs in U_{t,c} ($(round(time() - start; digits = 1)) s)")
-
-jldsave(joinpath(@__DIR__, "U_t_member$(index)_timing_cutoff_pairs_$(code).jld2");
+##
+jldsave(joinpath(output_path, "U_t_member$(index)_timing_cutoff_pairs_$(code).jld2");
     p_mem_max, τ_max, T_COH_DATA, sim_kwargs,
     step3_table)
