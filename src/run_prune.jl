@@ -1,11 +1,11 @@
-const code = "Steane713"
+const code = "BB12_2_3"
 const error_model = "depolarizing"
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
 ## Step 1: find the break-even memory budget (p_mem^max, τ_max) for the QEC code and gate fidelity.
 const gate_fidelity_qec = 0.9997
-const p_mem_max = 0.08660254037844387#find_pmem_max(qec_parity_checks(code), gate_fidelity_qec)
+p_mem_max = find_pmem_max(qec_parity_checks(code), gate_fidelity_qec)
 # Alternatives: take the value from the Step-1 curve directly (e.g. p_mem_max = 0.04), or use
 # the stricter p_mem_max = pmem_peak(pmem_values, eps_star_values).
 τ_max = t_cycle(p_mem_max; T_coh = T_COH_DATA)
@@ -21,7 +21,7 @@ const timing_grid = order_timing_grid((
     Δt_rotation_shuttle = [10e-6, 50e-6, 100e-6],                 # t_buff
     link_success_prob   = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5],         # p_link
 ))
-sim_kwargs = (seed = 1234, target_samples = 2000, max_wallclock = 60.0)
+sim_kwargs = (seed = 1234, target_samples = 1000, max_wallclock = 240.0)
 timing_cache = Dict{Any, Any}()
 
 start = time()

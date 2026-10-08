@@ -744,23 +744,8 @@ pmem_peak(pmem_values::AbstractVector, eps_star_values::AbstractVector) =
 """
     prune_timing_configurations!(cache, grid, τ_max; search_axis, z, sim_kwargs, T_coh_data)
 
-Step 2: U_{t,∞} = {h_t : p_mem(h_t, ∞) ≤ p_mem^max} on the ordered grid (see `order_timing_grid`).
-
-τ(h_t, ∞) is monotone in every timing parameter, so U_{t,∞} is a down-set ("staircase") in
-grid-index space: if index vector i is feasible, every j ≤ i componentwise (at least as
-demanding in every parameter) is feasible as well. Relaxing each parameter separately from
-the fastest corner would only find where the staircase meets each axis. Here the whole
-staircase is found, which Step 3 needs because it loops over every h_t ∈ U_{t,∞}:
-
-  b(a) = largest feasible index along `search_axis` for each setting a of the other axes.
-
-b is non-increasing in a. The settings a are visited in column-major order, so every a − e_j is
-finished before a. Then b(a) ≤ min_j b(a − e_j), and b(a) is found by binary search inside
-that bound. A setting whose bound is 0 needs no simulation. Taking the longest axis as
-`search_axis` (the default) gives the fewest simulations.
-
-Returns `members` (all of U_{t,∞}), `frontier` (its maximal, least demanding elements),
-`boundary` (the array b), `search_axis` and `n_simulations` (new simulations run).
+Step 2: U_{t,∞} on the ordered grid (see `order_timing_grid`).
+Returns `members` (all of U_{t,∞}).
 """
 function prune_timing_configurations!(cache::AbstractDict, grid::NamedTuple, τ_max::Real;
         search_axis::Int = argmax(collect(map(length, grid))),
@@ -997,3 +982,105 @@ end
 # convenience method: a single timing configuration h_t
 cutoff_range!(cache::AbstractDict, h_t::NamedTuple, τ_max::Real; kwargs...) =
     cutoff_range!(cache, [h_t], τ_max; kwargs...)
+
+
+const FIDELITY_NAMES = (:F_link, :F_CNOT, :F_readout, :T_coherence)
+
+"""
+    order_fidelity_grid(grid) -> NamedTuple
+
+Sort every axis from most to least demanding, so that grid index 1 is the most demanding (most
+expensive) value and a larger index means more relaxed hardware. For all four fidelity
+parameters a larger value is more demanding, so every axis is simply sorted descending.
+
+Same index convention as `order_timing_grid`: index 1 is the corner the search starts from,
+here the most demanding corner h_f^⊤, from which Step 4 runs a BFS down. A parameter is fixed
+by giving a single value.
+"""
+function order_fidelity_grid(grid::NamedTuple)
+    Set(keys(grid)) == Set(FIDELITY_NAMES) ||
+        throw(ArgumentError("fidelity grid must have exactly the fields $(FIDELITY_NAMES)"))
+    sorted_axes = map(name -> sort(unique(Float64.(collect(grid[name]))); rev = true), FIDELITY_NAMES)
+    return NamedTuple{FIDELITY_NAMES}(sorted_axes)
+end
+
+"""h_f at grid index tuple `idx` (one index per axis, in the order of the grid's fields)."""
+fidelity_point(grid::NamedTuple, idx::Tuple) =
+    NamedTuple{keys(grid)}(ntuple(d -> grid[d][idx[d]], length(grid)))
+
+"""
+    ghz_infidelity(raw_events, h_f; memory) -> ε̂
+
+ε̂(h_t, c, h_f) = 1 − (1/N) Σⱼ F(τ_GHZ,j, h_f). The trace of the noise-free timing simulation
+is independent of h_f, so the same `raw_events` is reused for every fidelity configuration and
+the noise is applied afterwards by the closed-form model.
+
+Requires `GHZfidelity_closedform.jl` to be included as well (the driver scripts do).
+"""
+ghz_infidelity(raw_events::DataFrame, h_f::NamedTuple; memory::Symbol = :depolarizing) =
+    1 - mean(ghz_fidelities_from_log(raw_events; memory = memory, h_f...))
+
+"""
+    least_demanding(points) -> Vector
+
+The least demanding elements of a set of index tuples: all p for which no other q in the set
+satisfies q ≥ p in every coordinate, i.e. the componentwise-maximal indices. O(|points|²·D),
+which is enough here and for the final Pareto set of Step 5. Comparing indices rather than
+values only works because every axis is ordered in the same direction (a larger index is less
+demanding, see `order_fidelity_grid` and `order_timing_grid`).
+"""
+least_demanding(points::AbstractVector) =
+    [p for p in points if !any(q -> q != p && all(q .>= p), points)]
+
+"""
+    feasible_fidelity_bfs(grid, raw_events, ε_star; memory) -> NamedTuple
+
+Breadth-first search on the directed grid graph G_f over the ordered fidelity grid
+(see `order_fidelity_grid`), starting from the most demanding corner h_f^⊤ = (1,…,1). An edge
+lowers one parameter by one ladder step. A node is feasible if ε̂(h_t, c, h_f) ≤ ε*(p_mem); it
+is then recorded and expanded along every axis, while infeasible nodes are *not* expanded:
+ε̂ is non-decreasing as the hardware is relaxed, so every node below an infeasible one is
+infeasible as well. Each node is evaluated at most once.
+
+The feasible set is therefore enumerated completely — every feasible node is reached over a
+monotone path of feasible nodes from h_f^⊤ — and `minimal` is its exact frontier. If h_f^⊤
+itself is infeasible, no point of the grid meets ε* and both sets come back empty.
+
+ε̂ is a Monte-Carlo estimate, so monotonicity can be violated by sampling noise; an isolated
+feasible pocket behind an infeasible node is then missed, as in any monotone search.
+
+Returns `feasible` (all feasible nodes), `minimal` (= F_f^min, the least demanding of them,
+as index tuples) and `n_visited` (nodes at which ε̂ was evaluated).
+"""
+function feasible_fidelity_bfs(grid::NamedTuple, raw_events::DataFrame, ε_star::Real;
+        memory::Symbol = :depolarizing)
+
+    D = length(grid)
+    dims = map(length, values(grid))
+    all(>(0), dims) || throw(ArgumentError("every fidelity axis needs at least one value"))
+
+    start = ntuple(_ -> 1, D)           # h_f^⊤, the most demanding corner
+    visited = Set{NTuple{D, Int}}((start,))
+    queue = [start]
+    feasible = NTuple{D, Int}[]
+    n_visited = 0
+
+    while !isempty(queue)
+        idx = popfirst!(queue)
+        n_visited += 1
+        if ghz_infidelity(raw_events, fidelity_point(grid, idx); memory = memory) > ε_star
+            continue                    # prune: every node below idx is infeasible as well
+        end
+        push!(feasible, idx)
+        for d in 1:D
+            idx[d] < dims[d] || continue
+            neighbour = Base.setindex(idx, idx[d] + 1, d)
+            if !(neighbour in visited)
+                push!(visited, neighbour)
+                push!(queue, neighbour)
+            end
+        end
+    end
+
+    return (feasible = feasible, minimal = least_demanding(feasible), n_visited = n_visited)
+end

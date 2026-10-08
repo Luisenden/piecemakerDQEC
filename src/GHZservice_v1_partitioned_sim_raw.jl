@@ -55,14 +55,16 @@ const NODE_PARTITIONS = Dict(
     "Steane713" => [[q] for q in 1:7],
 
     # 6 nodes, two data qubits per node. Stabilizer loads: [7, 6, 7, 7, 6, 7].
-    "BB12_2_3" => [
-        [1, 12],
-        [2, 10],
-        [3, 11],
-        [4, 9],
-        [5, 7],
-        [6, 8],
-    ],
+    # "BB12_2_3" => [
+    #     [1, 12],
+    #     [2, 10],
+    #     [3, 11],
+    #     [4, 9],
+    #     [5, 7],
+    #     [6, 8],
+    # ],
+    # 12 nodes
+    "BB12_2_3" => [[q] for q in 1:12],
 
     # 12 nodes. Every weight-4 generator spans four distinct nodes.
     # Stabilizer loads: [9, 10, 8, 8, 8, 8, 7, 8, 7, 8, 8, 7].
@@ -700,6 +702,7 @@ function run_single_configuration(;
 
         if check_convergence(log_data, GENERATORS; min_samples = target_samples)
             converged = true
+            @info "Converged after $(t_wallclock) seconds"
             break
         end
 
