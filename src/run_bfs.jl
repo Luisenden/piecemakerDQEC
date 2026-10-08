@@ -5,6 +5,7 @@ index       = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 231
 input_path  = length(ARGS) >= 2 ? ARGS[2] :
     "...4_backup_project_piecemakerDQEC/output_v1_cutoff/"
 output_path = length(ARGS) >= 3 ? ARGS[3] : "./"
+target_samp = length(ARGS) >= 5 ? parse(Int, ARGS[5]) : nothing
 max_wall    = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : nothing   # override max_wallclock
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
@@ -40,6 +41,7 @@ const fidelity_grid = order_fidelity_grid((
 ## Load one member of U_{t,∞} with its timing-cutoff pairs from Step 3.
 @load joinpath(input_path, "U_t_member$(index)_timing_cutoff_pairs_$(code).jld2") step3_table sim_kwargs p_mem_max τ_max
 max_wall === nothing || (sim_kwargs = merge(sim_kwargs, (max_wallclock = max_wall,)))
+target_samp === nothing || (sim_kwargs = merge(sim_kwargs, (target_samples = target_samp,)))
 
 @info "Step 4: member $(index), $(nrow(step3_table)) timing-cutoff pairs, " *
       "$(prod(length, fidelity_grid)) fidelity configurations" p_mem_max τ_max sim_kwargs
@@ -147,6 +149,6 @@ step4_log = isempty(log_rows) ? DataFrame() : DataFrame(log_rows)
 println("Step 4: $(nrow(step4_table)) minimal feasible (h_t, c, h_f) over " *
         "$(nrow(step3_table)) timing-cutoff pairs ($(round(time() - t_start; digits = 1)) s)")
 ##
-jldsave(joinpath(output_path, "step4_member$(index)_minimal_fidelity_$(code).jld2");
+jldsave(joinpath(output_path, "bfs_member$(index)_minimal_fidelity_$(code).jld2");
     p_mem_max, τ_max, T_COH_DATA, sim_kwargs, gate_fidelity_qec,
     timing_grid, fidelity_grid, step4_table, step4_log)
