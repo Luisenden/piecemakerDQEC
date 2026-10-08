@@ -5,8 +5,8 @@ index       = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 231
 input_path  = length(ARGS) >= 2 ? ARGS[2] :
     "...4_backup_project_piecemakerDQEC/output_v1_cutoff/"
 output_path = length(ARGS) >= 3 ? ARGS[3] : "./"
-target_samp = length(ARGS) >= 5 ? parse(Int, ARGS[5]) : nothing
-max_wall    = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : nothing   # override max_wallclock
+target_samp = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : nothing
+max_wall    = length(ARGS) >= 5 ? parse(Float64, ARGS[5]) : nothing   # override max_wallclock
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
