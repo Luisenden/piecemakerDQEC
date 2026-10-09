@@ -451,6 +451,54 @@ function improvement_factors(dom_solution_values)
         ),
     )
 end
+
+## minimal improvements needed per minimum-requirements solution
+# The improvement factor of a parameter is the factor by which it has to be
+# improved with respect to `baseline_values` to reach a given solution:
+#   IF > 1  -> the parameter has to be improved
+#   IF <= 1 -> the baseline already suffices (the solution relaxes the parameter)
+
+function improvement_factor_row(row; prefix = "IF_", keys_ = axis_order)
+    f = improvement_factors(row)
+
+    factors = Float64[f[k] for k in keys_]
+    # only improvements count, no credit for parameters that may be relaxed
+    needed = max.(factors, 1.0)
+    worst, i = findmax(needed)
+
+    merge(
+        (; (Symbol(prefix, k) => v for (k, v) in zip(keys_, factors))...),
+        (
+            IF_max        = worst,                                  # hardest single requirement
+            IF_bottleneck = worst > 1.0 ? string(keys_[i]) : "none", # which parameter that is
+            IF_n_improved = count(>(1.0), factors),                 # how many parameters must improve
+            IF_total      = prod(needed),                           # combined improvement "volume"
+        ),
+    )
+end
+
+add_improvement_factors!(df; kwargs...) = transform!(
+    df,
+    AsTable(collect(axis_order)) =>
+        ByRow(row -> improvement_factor_row(row; kwargs...)) => AsTable,
+)
+
+add_improvement_factors!(df_save)
+add_improvement_factors!(pareto_df)
+
+# easiest solutions first: smallest bottleneck, then smallest overall effort
+show(
+    sort(df_save, [:IF_max, :IF_total])[
+        :,
+        [:mean_GHZfidel, :mean_inter_measurement_time, :pL, :p_mem,
+         :IF_max, :IF_bottleneck, :IF_n_improved, :IF_total],
+    ],
+    allrows = true,
+    allcols = true,
+)
+
+CSV.write("pareto_data_sorted_new_improvement_factors.csv", df_save)
+
 ##
 axis_order = [
     :gate_fidelity,
