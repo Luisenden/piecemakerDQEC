@@ -9,9 +9,9 @@ using DataFrames
 using Random
 
 # This file contains only the simulation model and one-configuration runner.
-# Define `code` and `error_model` before including this file (the sweep driver does so).
 @assert @isdefined(code) "Define `code` before including GHZservice_v1_partitioned_sim_raw.jl"
-@assert @isdefined(error_model) "Define `error_model` before including GHZservice_v1_partitioned_sim_raw.jl"
+#@assert @isdefined(error_model) "Define `error_model` before including GHZservice_v1_partitioned_sim_raw.jl"
+const error_model = ""
 
 const codes = Dict(
 
@@ -55,14 +55,14 @@ const NODE_PARTITIONS = Dict(
     "Steane713" => [[q] for q in 1:7],
 
     # 6 nodes, two data qubits per node. Stabilizer loads: [7, 6, 7, 7, 6, 7].
-    # "BB12_2_3" => [
-    #     [1, 12],
-    #     [2, 10],
-    #     [3, 11],
-    #     [4, 9],
-    #     [5, 7],
-    #     [6, 8],
-    # ],
+    "BB12_2_3_partitioned" => [
+        [1, 12],
+        [2, 10],
+        [3, 11],
+        [4, 9],
+        [5, 7],
+        [6, 8],
+    ],
     # 12 nodes
     "BB12_2_3" => [[q] for q in 1:12],
 
@@ -84,8 +84,11 @@ const NODE_PARTITIONS = Dict(
     ],
 )
 
-const N_DATA = codes[code][1]
-const GENERATORS = codes[code][2]
+# `code` may carry a "_partitioned" suffix: the suffix only selects the node layout in
+# NODE_PARTITIONS, the stabilizer set comes from the base code.
+const BASE_CODE = replace(code, r"_partitioned$" => "")
+const N_DATA = codes[BASE_CODE][1]
+const GENERATORS = codes[BASE_CODE][2]
 const NODE_PARTITION = get(NODE_PARTITIONS, code, [[q] for q in 1:N_DATA])
 const N_NODES = length(NODE_PARTITION)
 

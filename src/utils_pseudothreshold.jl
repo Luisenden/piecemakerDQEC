@@ -625,6 +625,9 @@ end
 timing_point(grid::NamedTuple, idx::Tuple) =
     NamedTuple{keys(grid)}(ntuple(d -> grid[d][idx[d]], length(grid)))
 
+"""Key under which `evaluate_timing!` memoises T(h_t, c)."""
+timing_cache_key(h_t::NamedTuple, cutoff::Real, sim_kwargs::NamedTuple) = (h_t, Float64(cutoff), sim_kwargs)
+
 """
     evaluate_timing!(cache, h_t, cutoff; sim_kwargs, T_coh_data) -> NamedTuple
 
@@ -636,7 +639,7 @@ sampling noise, which matters because Steps 2-3 compare neighbours.
 """
 function evaluate_timing!(cache::AbstractDict, h_t::NamedTuple, cutoff::Real;
         sim_kwargs::NamedTuple, T_coh_data::Real = T_COH_DATA)
-    key = (h_t, Float64(cutoff), sim_kwargs)
+    key = timing_cache_key(h_t, cutoff, sim_kwargs)
     haskey(cache, key) && return cache[key]
 
     result = run_single_configuration(; NOISE_FREE_SIM..., h_t..., cutoff = Float64(cutoff), sim_kwargs...)
@@ -683,6 +686,7 @@ end
 
 """Parity checks of the QEC code, for the break-even model in utils_pseudothreshold.jl."""
 function qec_parity_checks(name::AbstractString)
+    name = replace(name, r"_partitioned$" => "")   # node partitioning does not change the code
     name == "Steane713" && return Steane7()
     name == "BB12_2_3" && return BB12_2_3
     name == "GB26_2_5" && return GB26_2_5
@@ -708,10 +712,12 @@ function find_pmem_max(code_checks, gate_fidelity::Real;
         log_pmem_lo::Real = -2.0,
         log_pmem_hi::Real = log10(0.75), # the maximum p_mem for a depolarizing channel
         log_tol::Real = 0.05,
-        nsamples_start::Int = 1_000,
-        nsamples_max::Int = 100_000)
+        nsamples_start::Int = 1000_000,
+        nsamples_max::Int = 1000_000, 
+        seed::Int = seed,)
 
-        decoder = TableDecoder(code_checks, error_weight=4)
+    Random.seed!(seed)
+    decoder = TableDecoder(code_checks, error_weight=4)
 
     status(logp) = classify_point(decoder, 10.0^logp, gate_fidelity, 1.0;
         nsamples_start = nsamples_start, nsamples_max = nsamples_max).status
@@ -807,6 +813,8 @@ function prune_timing_configurations!(cache::AbstractDict, grid::NamedTuple, τ_
 
     return (
         members       = members,
+        sim_kwargs     = sim_kwargs,
+        T_coh_data     = T_coh_data,
         n_simulations = length(cache) - n_cached_before,
     )
 end
@@ -859,8 +867,15 @@ guards against a single noisy τ̂ ending the sweep too early.
   1 one line per h_t (default): result of its sweep, elapsed time and ETA,
   2 additionally one line per simulated cutoff.
 
+`on_feasible`, if given, is called with each entry of U_{t,c} (trace included) as soon as the
+pair (h_t, c) is found feasible, so Step 4 can run on the trace without re-simulating it.
+With `keep_traces = false` the trace is dropped afterwards: the entry keeps `raw_events =
+nothing` and the evaluation is removed from `cache` (each cutoff of a sweep is evaluated
+only once, so no reuse is lost).
+
 Returns U_{t,c} as a vector of evaluations (fields of `evaluate_timing!` plus `k` and
-`p_kept`; k = 0 marks c = ∞). Each entry keeps its trace `raw_events` for Step 4.
+`p_kept`; k = 0 marks c = ∞). With `keep_traces = true` each entry keeps its trace
+`raw_events` for Step 4.
 """
 function cutoff_range!(cache::AbstractDict, U_t::AbstractVector, τ_max::Real;
         k_max::Int = 50,
@@ -868,6 +883,8 @@ function cutoff_range!(cache::AbstractDict, U_t::AbstractVector, τ_max::Real;
         z::Real = 0.0,
         sim_kwargs::NamedTuple,
         T_coh_data::Real = T_COH_DATA,
+        on_feasible = nothing,
+        keep_traces::Bool = true,
         verbose::Int = 1)
 
     fmt_ht(h) = join(("$(k)=$(round(v; sigdigits = 3))" for (k, v) in pairs(h)), ", ")
@@ -897,6 +914,14 @@ function cutoff_range!(cache::AbstractDict, U_t::AbstractVector, τ_max::Real;
 
     N = length(U_t)
     U_tc = NamedTuple[]
+
+    function record!(ev, k, p_kept)
+        entry = merge(ev, (k = k, p_kept = p_kept))
+        on_feasible === nothing || on_feasible(entry)
+        push!(U_tc, keep_traces ? entry : merge(entry, (raw_events = nothing,)))
+    end
+    drop_trace!(h, c) = keep_traces || delete!(cache, timing_cache_key(h, c, sim_kwargs))
+
     t_start = time()
     n_new_total = 0
     n_skipped = 0
@@ -921,10 +946,17 @@ function cutoff_range!(cache::AbstractDict, U_t::AbstractVector, τ_max::Real;
             status = "SKIPPED: c = ∞ infeasible"
             verbose == 0 && @warn "h_t = $(h_t) was inferred to be in U_{t,∞}, but its own c = ∞ estimate is infeasible; skipped." ev_inf.τ τ_max
         else
-            push!(U_tc, merge(ev_inf, (k = 0, p_kept = 1.0)))
-            n_feasible = 1
-
             T_ghz = ghz_generation_times(ev_inf.raw_events, h_t.Δt_readout)
+            record!(ev_inf, 0, 1.0)
+            n_feasible = 1
+        end
+        # the c = ∞ trace is not needed beyond T_ghz; release it before the sweep
+        if !keep_traces
+            drop_trace!(h_t, Inf)
+            ev_inf = merge(ev_inf, (raw_events = nothing,))
+        end
+        if ok_inf
+
             n_infeasible_in_a_row = 0
             limit_found = false
             last_k = 0
@@ -934,8 +966,9 @@ function cutoff_range!(cache::AbstractDict, U_t::AbstractVector, τ_max::Real;
                 ok = cycle_time_feasible(ev, τ_max; z = z)
                 report_cutoff(@sprintf("k = %2d, c = %s", q.k, fmt_ms(q.cutoff)), ev, ok, is_new, dt)
                 last_k = q.k
+                ok && record!(ev, q.k, q.p)
+                drop_trace!(h_t, q.cutoff)
                 if ok
-                    push!(U_tc, merge(ev, (k = q.k, p_kept = q.p)))
                     n_feasible += 1
                     n_infeasible_in_a_row = 0
                 else
