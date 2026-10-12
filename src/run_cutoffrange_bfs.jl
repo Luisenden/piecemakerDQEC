@@ -15,13 +15,13 @@ output_path = length(ARGS) >= 6 ? ARGS[6] : "./"
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
 # Steps 3+4 reuse the gate fidelity and noise model Step 2 (run_prune.jl) pruned with.
-@load joinpath(input_path, "pruned_timing_configurations_$(code).jld2") members run_info
-const gate_fidelity_qec = run_info.gate_fidelity_qec
-const memory_model = Symbol(error_model)
-const seed = run_info.seed
+@load joinpath(input_path, "pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
+gate_fidelity_qec = run_info.gate_fidelity_qec
+memory_model = Symbol(error_model)
+seed = run_info.seed
 
-const target_samples = run_info.target_samples
-const max_wallclock = run_info.max_wallclock
+target_samples = run_info.target_samples
+max_wallclock = run_info.max_wallclock
 
 @info "Settings" code gate_fidelity_qec error_model target_samples max_wallclock
 
@@ -29,7 +29,7 @@ include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
 include(joinpath(@__DIR__, "GHZfidelity_closedform.jl"))
 
-p_mem_max, τ_max = run_info.error_budget.p_mem_max, run_info.error_budget.τ_max
+p_mem_max, τ_max = error_budget.p_mem_max, error_budget.τ_max
 @info "Break-even memory budget" p_mem_max τ_max
 
 # Bracket of the ε* binary search; kept here so the guards below stay in sync with the call.
@@ -150,8 +150,8 @@ println("Steps 3+4: $(nrow(step3_table)) timing-cutoff pairs in U_{t,c}, $(nrow(
         "feasible (h_t, c, h_f) ($(round(time() - start; digits = 1)) s)")
 ##
 jldsave(joinpath(output_path, "U_t_member$(index)_timing_cutoff_pairs_$(code).jld2");
-    p_mem_max, τ_max, T_COH_DATA, sim_kwargs,
+    p_mem_max, τ_max, T_coh_data, sim_kwargs,
     step3_table)
 jldsave(joinpath(output_path, "bfs_member$(index)_minimal_fidelity_$(code).jld2");
-    p_mem_max, τ_max, T_COH_DATA, sim_kwargs, gate_fidelity_qec,
+    p_mem_max, τ_max, T_coh_data, sim_kwargs, gate_fidelity_qec,
     timing_grid, fidelity_grid, step4_table, step4_log)
