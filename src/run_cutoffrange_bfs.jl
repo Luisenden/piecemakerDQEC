@@ -3,6 +3,7 @@
 # after, so only the summary per (h_t, c) and the BFS results are kept (no re-simulation as in
 # run_findcutoffrange.jl → run_bfs.jl).
 
+# TODO: instead of using pmem(estimated cycle time) calculate pmem directly from the trace
 using JLD2
 
 const code = length(ARGS) >= 1 ? ARGS[1] : ""
