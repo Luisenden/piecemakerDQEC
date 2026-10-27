@@ -183,16 +183,24 @@ function next_attempt_id!(counter)
     return counter[]
 end
 
-@resumable function consumer(sim, net, pm_slot::RegRef, gen_set_index::Int, iscutoff::Bool, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes}, Δt_readout::Float64, readout_fidelity::Float64)
+@resumable function consumer(sim, net, pm_slot::RegRef, gen_set_index::Int, attempt_id::Int, iscutoff::Bool, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes}, Δt_readout::Float64, readout_fidelity::Float64)
+    @yield lock(pm_slot)
+    # Re-check under the lock: the cutoff timer and the completing fusion can both schedule a
+    # consumer for the same attempt; whichever gets the lock second must not touch the slot again
+    # (it may already be consumed or even host a new attempt).
+    pm_msg = query(pm_slot, :isPiecemaker, attempt_id; assigned = true, filo = false)
+    if isnothing(pm_msg)
+        @debug "Attempt $(attempt_id) at piecemaker slot $(pm_slot.idx) was already consumed, nothing to do."
+        unlock(pm_slot)
+        return
+    end
+    untag!(net[1], pm_msg.id) # untag such that is is not found anymore
 
     msgs = queryall(net[1], :PartOfGenSet, gen_set_index, pm_slot.idx, ❓; filo = false)
-    
+
     expected_weight = length(GENERATOR_TO_NODES[gen_set_index])
     !iscutoff && @assert length(msgs) == expected_weight "Expected to find all $(expected_weight) node slots of complete generator set for piecemaker slot $(pm_slot.idx) but received: $(msgs)"
 
-    pm_msg = query(net[1][pm_slot.idx], :isPiecemaker, ❓; assigned = true, filo = false)
-    @assert !isnothing(pm_msg) "Expected piecemaker slot $(pm_slot.idx) to be tagged with isPiecemaker but it is not!"
-    
     # check that the participating switch slots are exactly the correct node support of the generator
     switchslots_idcs = sort([msg.slot.idx for msg in msgs])
     @debug "Generator set indices for generator set $(gen_set_index): $(switchslots_idcs)"
@@ -225,7 +233,6 @@ end
     @debug "Measuring client qubits at slots $(clientslot_idcs) to consume GHZ state for generator set $(gen_set_index)"
 
     @yield reduce(&, lock.(clientslots_to_measure))
-    @yield lock(pm_slot)
     @debug "Projecting out piecemaker qubit at slot $(pm_slot.idx) to consume GHZ state for generator set $(gen_set_index)"
     t_pm_meas = now(sim)
     res = project_traceout!(pm_slot, σˣ)
@@ -253,7 +260,6 @@ end
         delete!(pair_times, Int(msg.id))
         unlock(net[1 + msg.slot.idx][msg.tag[3]])
     end
-    untag!(net[1], pm_msg.id)
 
     unlock(pm_slot)
 
@@ -359,21 +365,62 @@ end
     while !isempty(pending_batches)
         msgs, batch_time = popfirst!(pending_batches)
 
-        # This is the physical switch pause for accepting/rotating/shuttling this batch.
-        # The listener remains alive during this timeout and can discard newly arriving Bell pairs.
-        global_pause[] = now(sim) + length(msgs) * Δt_rotation_shuttle
+        t_ready = batch_time + Δt_rotation_shuttle
+        now(sim) < t_ready && @yield timeout(sim, t_ready - now(sim))
 
         for msg in msgs
             clientslot_idx = msg.tag[3]
             # Keep the original SwitchSlotInfo tag unchanged; cutoff logic uses its timestamp.
-            tagid = tag!(msg.slot, Tag(SwitchSlotInfo, msg.slot.idx, clientslot_idx, batch_time))
+            tagid = Int(tag!(msg.slot, Tag(SwitchSlotInfo, msg.slot.idx, clientslot_idx, batch_time))) # tag! returns an Int128, which Tag does not accept
             # Store the listener-observed Bell-pair birth time outside the Tag system.
-            pair_times[Int(tagid)] = PairTimes(batch_time, NaN, NaN)
-            @yield timeout(sim, Δt_rotation_shuttle) # this is the physical switch pause for accepting/rotating/shuttling this batch
+            pair_times[tagid] = PairTimes(batch_time, NaN, NaN)
             # get corresponding slot idx at client
-            # tag with switch slot info
-            @yield @process SwitchSlotProt(sim, net, msg.slot.idx, clientslot_idx, Int(tagid), attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, log_data, pair_times)
-            @yield @process CutoffDiscardProt(sim, net, cutoff, log_data, pair_times, Δt_readout, readout_fidelity)
+
+            switchslot_idx = msg.slot.idx
+            @assert isnothing(query(net[1][switchslot_idx], :PartOfGenSet, ❓, ❓, ❓; assigned = true, filo = false)) "This slot is already part of a GHZ attempt, it should not have received a new Bell pair."
+
+            # we query for all potential piecemaker slots among clients that have a generator set in common
+            pmslot_msgs = []
+            for otherswitchslot_idx in NODE_TO_NODEINCOMMON[switchslot_idx]
+                pmslot_msg = query(net[1][otherswitchslot_idx], :isPiecemaker, ❓; assigned = true, filo = false)
+                if !isnothing(pmslot_msg)
+                    @debug "Found potential piecemaker slot at switch slot idx $(otherswitchslot_idx) with info $(pmslot_msg)"
+                    gensetinfo_msg = query(pmslot_msg.slot, :PartOfGenSet, ❓, pmslot_msg.slot.idx, ❓; assigned = true, filo = false)
+                    @debug "checking if current switch slot idx $(switchslot_idx) and potential piecemaker slot idx $(otherswitchslot_idx) are part of generator node support $(GENERATOR_TO_NODES[gensetinfo_msg.tag[2]])"
+                    (switchslot_idx ∈ GENERATOR_TO_NODES[gensetinfo_msg.tag[2]]) && push!(pmslot_msgs, pmslot_msg) # only consider it as potential piecemaker slot if the current switch slot is part of the same generator set as the piecemaker slot
+                end
+            end
+
+            # in this case there is at least one suitable piecemaker slot to fuse with, we choose the oldest one (i.e., the one with the smallest attempt_id)
+            min_counter = Inf
+            pmslot_to_fuse_with = nothing
+            gen_set_idx = nothing
+            for pmslot_msg in pmslot_msgs
+                msg_pm_info = query(pmslot_msg.slot, :isPiecemaker, ❓; assigned = true, filo = false)
+                msg_gensetinfo = query(pmslot_msg.slot, :PartOfGenSet, ❓, pmslot_msg.slot.idx, ❓; assigned = true, filo = false)
+                counter = msg_pm_info.tag[2]
+                # we take the piecemaker slot with the smallest attempt_id (i.e., the one that has been waiting the longest for fusion)
+                if counter < min_counter 
+                    pmslot_to_fuse_with = pmslot_msg.slot
+                    gen_set_idx = msg_gensetinfo.tag[2]
+                    min_counter = counter
+                end
+            end
+
+            # if no piecemaker slot is found, we become the piecemaker and start a new GHZ attempt
+            if isempty(pmslot_msgs)
+                @yield lock(net[1][switchslot_idx])
+                attempt_id = next_attempt_id!(attempt_counter)
+                tag!(net[1][switchslot_idx], Tag(:isPiecemaker, attempt_id))
+                gen_set_idx = rand(NODE_TO_GENERATORS[switchslot_idx])
+                tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
+                @debug "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
+                isfinite(cutoff) && @process CutoffTimerProt(sim, net, msg.slot, cutoff, log_data, pair_times, batch_time, attempt_id) # this should not impart any simulation time?
+                unlock(net[1][switchslot_idx])
+            else
+                @debug "Found potential piecemaker slots: $(pmslot_msgs)"
+                @process FusionConsumer(sim, net, pmslot_to_fuse_with, msg.slot.idx, clientslot_idx, gen_set_idx, Int(min_counter), Int(tagid), Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, log_data, pair_times)
+            end
         end
     end
 
@@ -417,6 +464,9 @@ end
         end
 
         push!(pending_batches, (msgs, batch_time)) # queue Bell pairs together with their listener-observed birth time
+        # This is the physical switch pause for accepting/rotating/shuttling this batch.
+        # The listener remains alive during this timeout and can discard newly arriving Bell pairs.
+        global_pause[] = batch_time + Δt_rotation_shuttle
 
         if !worker_running[]
             worker_running[] = true
@@ -441,99 +491,48 @@ end
 end
 
 
-@resumable function CutoffDiscardProt(sim, net, cutoff::Float64, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes}, Δt_readout::Float64, readout_fidelity::Float64)
-    # this process is triggered by the switch_listener and checks if there are any switch slots that have been stored for longer than the cutoff time.
-
-    msgs = queryall(net[1], :isPiecemaker, ❓; assigned = true, filo = false)
-    @debug "CutoffDiscardProt: messages found: $(length(msgs))"
-    isempty(msgs) && return # nothing to discard
-
-    for msg in msgs
-        time_of_creation = query(msg.slot, SwitchSlotInfo, ❓, ❓, ❓; assigned = true, filo = false).tag[4]
-        if now(sim) - time_of_creation > cutoff
-            gensetinfo_msg = query(msg.slot, :PartOfGenSet, ❓, ❓, ❓; filo = false)
-            pm_slot_idx = gensetinfo_msg.tag[3]
-            genset_idx = gensetinfo_msg.tag[2]
-            @yield @process consumer(sim, net, net[1][pm_slot_idx], genset_idx, true, log_data, pair_times, Δt_readout, readout_fidelity) # if the cutoff time has been exceeded, we consume the GHZ state that was being built with the corresponding piecemaker slot to free up the switch slots
-            break
-        end
+@resumable function CutoffTimerProt(sim, net, pm_slot::RegRef, cutoff::Float64, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes}, batch_time::Float64, attempt_id::Int)
+    # this process is started by the switch_listener and consumes the GHZ state when the cutoff time is reached
+    @yield timeout(sim, max(0.0, batch_time+ cutoff - now(sim)))
+    msg = query(pm_slot, :isPiecemaker, attempt_id)
+    if !isnothing(msg)
+        gensetinfo_msg = query(pm_slot, :PartOfGenSet, ❓, ❓, ❓; filo = false)
+        genset_idx = gensetinfo_msg.tag[2]
+        @yield @process consumer(sim, net, pm_slot, genset_idx, attempt_id, true, log_data, pair_times, 0.0, 1.0) # if the cutoff time has been exceeded, we consume the GHZ state that was being built with the corresponding piecemaker slot to free up the switch slots
     end
 end
 
-@resumable function SwitchSlotProt(sim, net, switchslot_idx::Int, clientslot_idx::Int, tagid::Int, attempt_counter::Ref{Int}, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes})
-    # this is a sequential protocol, meaning that it occupies the switch slots for its duration until fusion is complete
-    # first it checks for all possible GHZ attempts to fuse with (using tag PartOfGenSet)
-    # if the answer is (an)other slot(s) it calls fusion for the oldest piecemaker slot
-    # if non of the current GHZ attempts are suitable for fusion, it becomes a new piecemaker and starts a new GHZ attempt 
-    # and receives tag isPiecemaker; in addition it receives a generator set tag PartOfGenSet uniformly at random
-    # from the generators whose NODE SUPPORT contains the current switch slot / physical node.
 
-    @assert isnothing(query(net[1][switchslot_idx], :PartOfGenSet, ❓, ❓, ❓; assigned = true, filo = false)) "This slot is already part of a GHZ attempt, it should not have received a new Bell pair."
 
-    # we query for all potential piecemaker slots among clients that have a generator set in common
-    pmslot_msgs = []
-    for otherswitchslot_idx in NODE_TO_NODEINCOMMON[switchslot_idx]
-        pmslot_msg = query(net[1][otherswitchslot_idx], :isPiecemaker, ❓; assigned = true, filo = false)
-        if !isnothing(pmslot_msg)
-            @debug "Found potential piecemaker slot at switch slot idx $(otherswitchslot_idx) with info $(pmslot_msg)"
-            gensetinfo_msg = query(pmslot_msg.slot, :PartOfGenSet, ❓, pmslot_msg.slot.idx, ❓; assigned = true, filo = false)
-            @debug "checking if current switch slot idx $(switchslot_idx) and potential piecemaker slot idx $(otherswitchslot_idx) are part of generator node support $(GENERATOR_TO_NODES[gensetinfo_msg.tag[2]])"
-            (switchslot_idx ∈ GENERATOR_TO_NODES[gensetinfo_msg.tag[2]]) && push!(pmslot_msgs, pmslot_msg) # only consider it as potential piecemaker slot if the current switch slot is part of the same generator set as the piecemaker slot
-        end
+@resumable function FusionConsumer(sim, net, pmslot_to_fuse_with::RegRef, switchslot_idx::Int, clientslot_idx::Int, gen_set_idx::Int, attempt_id::Int, tagid::Int, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes})
+
+    fused = @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, attempt_id, tagid, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, pair_times)
+    fused || return # the attempt was discarded by the cutoff before this fusion could start
+
+    # check if after fusion the GHZ state contains all nodes required by this generator
+    msgs = queryall(net[1], :PartOfGenSet, gen_set_idx, pmslot_to_fuse_with.idx, ❓; filo = false)
+    if length(msgs) == length(GENERATOR_TO_NODES[gen_set_idx])
+        @yield @process consumer(sim, net, pmslot_to_fuse_with, gen_set_idx, attempt_id, false, log_data, pair_times, Δt_readout, readout_fidelity) # if the fused state is complete, run the consume listener to consume it;
     end
-    
-    if isempty(pmslot_msgs)
-        # there is no piecemaker slot in any of the potentially common generator sets, this slot needs therefore to become a piecemaker and start a new GHZ attempt
-        @yield lock(net[1][switchslot_idx])
-        attempt_id = next_attempt_id!(attempt_counter)
-        tag!(net[1][switchslot_idx], Tag(:isPiecemaker, attempt_id))
-        gen_set_idx = rand(NODE_TO_GENERATORS[switchslot_idx])
-        tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
-        @debug "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
-        unlock(net[1][switchslot_idx])
-        
-    else
-        # in this case there is at least one suitable piecemaker slot to fuse with, we choose the oldest one (i.e., the one with the smallest attempt_id)
-        min_counter = Inf
-        pmslot_to_fuse_with = nothing
-        gen_set_idx = nothing
-        for pmslot_msg in pmslot_msgs
-            msg_pm_info = query(pmslot_msg.slot, :isPiecemaker, ❓; assigned = true, filo = false)
-            msg_gensetinfo = query(pmslot_msg.slot, :PartOfGenSet, ❓, pmslot_msg.slot.idx, ❓; assigned = true, filo = false)
-            counter = msg_pm_info.tag[2]
-            # we take the piecemaker slot with the smallest attempt_id (i.e., the one that has been waiting the longest for fusion)
-            if counter < min_counter 
-                pmslot_to_fuse_with = pmslot_msg.slot
-                gen_set_idx = msg_gensetinfo.tag[2]
-                min_counter = counter
-            end
-        end
 
-        if isnothing(pmslot_to_fuse_with) 
-            # in this case all potential piecemaker slots in common used in a GHZ state for an unsuited, meaning that it needs to start a new generator set in which it is itself the piecemaker
-            @debug "in this case all potential piecemaker slots are in an unsuitable generator set, meaning that $(switchslot_idx) needs to start a new generator set in which it is itself the piecemaker"
-            @yield lock(net[1][switchslot_idx])
-            attempt_id = next_attempt_id!(attempt_counter)
-            tag!(net[1][switchslot_idx], Tag(:isPiecemaker, attempt_id))
-            gen_set_idx = rand(NODE_TO_GENERATORS[switchslot_idx])
-            tag!(net[1][switchslot_idx], Tag(:PartOfGenSet, gen_set_idx, switchslot_idx, tagid))
-            @debug "Tagging switch slot idx $(switchslot_idx) as PIECEMAKER and part of $(gen_set_idx)"
-            unlock(net[1][switchslot_idx])
-        else
-            # in this case we found a piecemaker slot within a suitable generator set and fuse with it
-            @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, tagid, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, pair_times)
-
-            # check if after fusion the GHZ state contains all nodes required by this generator
-            msgs = queryall(net[1], :PartOfGenSet, gen_set_idx, pmslot_to_fuse_with.idx, ❓; filo = false)
-            if length(msgs) == length(GENERATOR_TO_NODES[gen_set_idx])
-                @yield @process consumer(sim, net, pmslot_to_fuse_with, gen_set_idx, false, log_data, pair_times, Δt_readout, readout_fidelity) # if the fused state is complete, run the consume listener to consume it;
-            end
-        end
-    end
 end
 
-@resumable function fusion(sim, net, piecemaker_slot::RegRef, clientswitch_slot::RegRef, client_slot::RegRef, gen_set_idx::Int, tagid::Int, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, pair_times::Dict{Int,PairTimes})
+@resumable function fusion(sim, net, piecemaker_slot::RegRef, clientswitch_slot::RegRef, client_slot::RegRef, gen_set_idx::Int, attempt_id::Int, tagid::Int, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, pair_times::Dict{Int,PairTimes})
     @yield lock(piecemaker_slot) & lock(clientswitch_slot) & lock(client_slot)
+    # The piecemaker was chosen without holding its lock, so the attempt may have been consumed
+    # by the cutoff in the meantime (the slot may then be empty or host a new attempt).
+    # In that case the incoming Bell pair is discarded instead of fused.
+    if isnothing(query(piecemaker_slot, :isPiecemaker, attempt_id; assigned = true, filo = false))
+        @debug "Attempt $(attempt_id) at piecemaker slot $(piecemaker_slot.idx) is gone, discarding Bell pair at switch slot $(clientswitch_slot.idx)"
+        project_traceout!(clientswitch_slot, σˣ)
+        project_traceout!(client_slot, σˣ)
+        delete!(pair_times, tagid)
+        unlock(piecemaker_slot)
+        unlock(clientswitch_slot)
+        unlock(client_slot)
+        untag!(net[1], Int128(tagid)) # SwitchSlotInfo tag (tag ids are Int128); also wakes the entangler waiting for a free slot
+        return false
+    end
     pair_times[tagid].cnot = now(sim)   # c_j
     apply!((piecemaker_slot, clientswitch_slot), CNOT)
     @yield timeout(sim, Δt_CNOTgate)
@@ -553,6 +552,7 @@ end
     unlock(clientswitch_slot)
     unlock(client_slot)
     @debug "Fused client $(clientswitch_slot.idx) with first client $(piecemaker_slot.idx)"
+    return true
 end
 
 @resumable function naive_entangler(

@@ -38,4 +38,4 @@ sim_kwargs = step2.sim_kwargs
 run_info = (; code, gate_fidelity_qec, sim_kwargs...)
 error_budget = (; p_mem_max, τ_max)
 T_coh_data = step2.T_coh_data
-@save joinpath(@__DIR__, "pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
+@save joinpath(@__DIR__, "multizone_pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data

@@ -16,7 +16,7 @@ output_path = length(ARGS) >= 6 ? ARGS[6] : "./"
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
 # Steps 3+4 reuse the gate fidelity and noise model Step 2 (run_prune.jl) pruned with.
-@load joinpath(input_path, "pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
+@load joinpath(input_path, "multizone_pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
 gate_fidelity_qec = run_info.gate_fidelity_qec
 memory_model = Symbol(error_model)
 seed = run_info.seed

@@ -702,7 +702,7 @@ p_mem^max is therefore found by binary search over log10(p_mem) at F_GHZ = 1.
 
 The lower bracket must be break-even. Note that with gate noise break-even also fails for very
 small p_mem (the gate-noise floor of p_L exceeds p_mem), so the break-even set is an interval
-[p_min, p_max]; choose `log_pmem_lo` inside it.
+[p_min, p_max]. If `log_pmem_lo` lies below p_min it is moved up in steps of `log_pmem_step`.
 
 Statistically unresolved points (:interval_uncertain) are counted as feasible and the upper
 end of the final bracket is returned. Both choices err towards a larger p_mem^max, so the
@@ -712,6 +712,7 @@ function find_pmem_max(code_checks, gate_fidelity::Real;
         log_pmem_lo::Real = -2.0,
         log_pmem_hi::Real = log10(0.75), # the maximum p_mem for a depolarizing channel
         log_tol::Real = 0.05,
+        log_pmem_step::Real = 0.25,
         nsamples_start::Int = 1000_000,
         nsamples_max::Int = 1000_000, 
         seed::Int = seed,)
@@ -722,12 +723,20 @@ function find_pmem_max(code_checks, gate_fidelity::Real;
     status(logp) = classify_point(decoder, 10.0^logp, gate_fidelity, 1.0;
         nsamples_start = nsamples_start, nsamples_max = nsamples_max).status
 
-    status(log_pmem_lo) == :interval_above && throw(ArgumentError(
-        "p_mem = 10^$(log_pmem_lo) is not break-even even with a perfect GHZ state; choose another lower bracket."))
+    # With gate noise the break-even interval can start above log_pmem_lo (gate-noise floor of p_L);
+    # step the lower bracket upwards until it lies inside the interval.
+    lo = Float64(log_pmem_lo)
+    while status(lo) == :interval_above
+        lo += log_pmem_step
+        lo < log_pmem_hi || throw(ArgumentError(
+            "no break-even p_mem in [10^$(log_pmem_lo), 10^$(log_pmem_hi)] even with a perfect GHZ state " *
+            "(gate fidelity $(gate_fidelity) too low for this code)."))
+    end
+    lo > log_pmem_lo && @info "Lower bracket moved into the break-even interval" log_pmem_lo lo
     status(log_pmem_hi) == :interval_above ||
         @warn "p_mem = 10^$(log_pmem_hi) is not resolved as above break-even; p_mem^max may exceed the bracket."
 
-    lo, hi = Float64(log_pmem_lo), Float64(log_pmem_hi)
+    hi = Float64(log_pmem_hi)
     while hi - lo > log_tol
         mid = (lo + hi) / 2
         if status(mid) == :interval_above
