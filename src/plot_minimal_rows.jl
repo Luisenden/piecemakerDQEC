@@ -14,10 +14,11 @@
 # numbers are positions in that table, i.e. the [i] that run_minimal.jl prints.
 #
 # Usage:
-#   julia --project=src src/plot_minimal_rows.jl <code> [input_path] [output_path] [--rows=1,2,3]
+#   julia --project=src src/plot_minimal_rows.jl <code> [input_path] [output_path] [--rows=1,2,3] [--singlezone]
 #
 #   --rows defaults to the first five rows (the least demanding by index sum).
-#   writes minimal_requirements_<code>_rows_<r1>_<r2>_….pdf.
+#   --singlezone reads/writes the single-fusion-zone files (<zone> = singlezone); default multizone.
+#   writes <zone>_minimal_requirements_<code>_rows_<r1>_<r2>_….pdf.
 
 using JLD2
 using DataFrames
@@ -37,11 +38,14 @@ output_path = length(pos) >= 3 ? pos[3] : "./"
 rows_flag = let i = findfirst(startswith("--rows="), flags)
     i === nothing ? "" : String(split(flags[i], "="; limit = 2)[2])
 end
-all(startswith("--rows="), flags) || error("unknown flag(s): $(join(flags, ", ")); only --rows=1,2,3")
+known(f) = startswith(f, "--rows=") || f == "--singlezone"
+all(known, flags) ||
+    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --rows=1,2,3, --singlezone")
+const zone = "--singlezone" in flags ? "singlezone" : "multizone"
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
-@load joinpath(input_path, "minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid
+@load joinpath(input_path, "$(zone)_minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid
 nrow(step5_table) == 0 && error("the Step-5 table is empty: nothing to plot")
 
 const SERIES_COLORS  = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
@@ -156,7 +160,7 @@ for (k, r) in enumerate(rows)
     )
 end
 
-out_pdf = joinpath(output_path, "minimal_requirements_$(code)_rows_$(join(rows, "_")).pdf")
+out_pdf = joinpath(output_path, "$(zone)_minimal_requirements_$(code)_rows_$(join(rows, "_")).pdf")
 savefig(fig, out_pdf)
 println("Step 5 rows: $(ns) of $(nrow(step5_table)) frontier rows over $(ny) axes ",
         "($(join(["$(n)=$(c)" for (n, c) in zip(anames, n_slots)], ", ")) slots), wrote $(out_pdf)")

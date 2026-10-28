@@ -16,14 +16,15 @@
 # to correlate and is dropped.
 #
 # Usage:
-#   julia --project=src src/plot_substitution.jl <code> [input_path] [output_path] [--within=AXIS] [--full]
+#   julia --project=src src/plot_substitution.jl <code> [input_path] [output_path] [--within=AXIS] [--full] [--singlezone]
 #
 #   --within=AXIS   ρ inside each value of AXIS (levels with fewer than 4 points are skipped),
 #                   pooled by Fisher-z with weights n - 3. Use it when one axis splits the frontier
 #                   into blocks and so induces correlations between all the others, as F_link does.
-#                   writes minimal_requirements_<code>_substitution_within_<AXIS>.pdf.
+#                   writes <zone>_minimal_requirements_<code>_substitution_within_<AXIS>.pdf.
 #   --full          draw the whole matrix instead of the lower triangle.
-#   writes minimal_requirements_<code>_substitution.pdf.
+#   --singlezone    read/write the single-fusion-zone files (<zone> = singlezone); default multizone.
+#   writes <zone>_minimal_requirements_<code>_substitution.pdf.
 
 using JLD2
 using DataFrames
@@ -45,13 +46,14 @@ within_flag = let i = findfirst(startswith("--within="), flags)
     i === nothing ? "" : String(split(flags[i], "="; limit = 2)[2])
 end
 lower_only = !("--full" in flags)
-known(f) = startswith(f, "--within=") || f == "--full"
+known(f) = startswith(f, "--within=") || f in ("--full", "--singlezone")
 all(known, flags) ||
-    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --within=AXIS, --full")
+    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --within=AXIS, --full, --singlezone")
+const zone = "--singlezone" in flags ? "singlezone" : "multizone"
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
-@load joinpath(input_path, "minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid
+@load joinpath(input_path, "$(zone)_minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid
 nrow(step5_table) == 0 && error("the Step-5 table is empty: nothing to correlate")
 
 const anames = (keys(timing_grid)..., keys(fidelity_grid)...)
@@ -157,7 +159,7 @@ scatter!(fig, [NaN], [NaN]; marker_z = [0.0], c = POLES, clims = (-1, 1), colorb
          colorbar_title = L"\mathrm{Spearman}\ \rho", label = false)
 
 suffix = within === nothing ? "" : "_within_$(within)"
-out_pdf = joinpath(output_path, "minimal_requirements_$(code)_substitution$(suffix).pdf")
+out_pdf = joinpath(output_path, "$(zone)_minimal_requirements_$(code)_substitution$(suffix).pdf")
 savefig(fig, out_pdf)
 
 pairs = sort([(ρ[i, j], kept[i], kept[j]) for i in 1:n for j in 1:i - 1 if !isnan(ρ[i, j])]; by = first)

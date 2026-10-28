@@ -6,11 +6,12 @@
 # its own column right of a dashed break, labelled ∞.
 #
 # Usage:
-#   julia --project=src src/plot_minimal.jl <code> [input_path] [output_path] [lines] [--group=COLUMN]
+#   julia --project=src src/plot_minimal.jl <code> [input_path] [output_path] [lines] [--group=COLUMN] [--singlezone]
 #
 #   lines = true connects the points in order of c; the default draws markers only.
 #   --group=COLUMN draws one series per value of COLUMN, e.g. k (cutoff tier) or member, and
-#   writes minimal_requirements_<code>_by_<COLUMN>.pdf.
+#   writes <zone>_minimal_requirements_<code>_by_<COLUMN>.pdf.
+#   --singlezone reads/writes the single-fusion-zone files (<zone> = singlezone); default multizone.
 
 using JLD2
 using DataFrames
@@ -31,11 +32,14 @@ lines = length(pos) >= 4 ? parse(Bool, pos[4]) : false
 group = let i = findfirst(startswith("--group="), flags)
     i === nothing ? "" : String(split(flags[i], "="; limit = 2)[2])
 end
-all(startswith("--group="), flags) || error("unknown flag(s): $(join(flags, ", ")); only --group=COLUMN")
+known(f) = startswith(f, "--group=") || f == "--singlezone"
+all(known, flags) ||
+    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --group=COLUMN, --singlezone")
+const zone = "--singlezone" in flags ? "singlezone" : "multizone"
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
-@load joinpath(input_path, "minimal_requirements_$(code).jld2") step5_table
+@load joinpath(input_path, "$(zone)_minimal_requirements_$(code).jld2") step5_table
 nrow(step5_table) == 0 && error("the Step-5 table is empty: nothing to plot")
 
 ## Series
@@ -151,7 +155,7 @@ end
 fig = plot(p_eps, p_τ; layout = grid(2, 1), link = :x, size = (700, 560))
 
 suffix = group == "" ? "" : "_by_$(group)"
-out_pdf = joinpath(output_path, "minimal_requirements_$(code)$(suffix).pdf")
+out_pdf = joinpath(output_path, "$(zone)_minimal_requirements_$(code)$(suffix).pdf")
 savefig(fig, out_pdf)
 println("Step 5 figure: ε̂ and τ against c for $(nrow(step5_table)) frontier rows ",
         "($(count(!isfinite, step5_table.cutoff)) with c = ∞) in $(length(series)) series, ",

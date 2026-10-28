@@ -21,8 +21,8 @@
 # Usage:
 #   julia --project=src src/plot_improvements.jl <step6_path> [output_path] [flags]
 #
-#   step6_path   step6_improvement_factors_<code>.jld2, or the folder holding it (Step 6)
-#   output_path  where step6_improvement_histogram_<code>.pdf is written; defaults to ./
+#   step6_path   <zone>_step6_improvement_factors_<code>.jld2, or the folder holding it (Step 6)
+#   output_path  where <zone>_step6_improvement_histogram_<code>.pdf is written; defaults to ./
 #
 #   --code=NAME       code tag in the file names (default Steane713)
 #   --split=COLUMN    one panel per value of COLUMN, drawn side by side on a common radial range
@@ -66,7 +66,8 @@
 #   --normalize       colour by share of solutions instead of count (implied by --split)
 #   --no-clip         drop values outside an explicit --range instead of folding them into the
 #                     edge bins (they then vanish from the picture)
-#   --out=FILE        write here instead of <output_path>/step6_improvement_histogram_<code>.pdf
+#   --out=FILE        write here instead of <output_path>/<zone>_step6_improvement_histogram_<code>.pdf
+#   --singlezone      single-fusion-zone files (<zone> = singlezone); default multizone
 
 using JLD2
 using DataFrames
@@ -88,7 +89,7 @@ end
 
 let known = ("code", "split", "split-bins", "range", "nbins", "out")
     unknown = filter(flags) do f
-        f in ("--normalize", "--no-clip") && return false
+        f in ("--normalize", "--no-clip", "--singlezone") && return false
         return !any(k -> startswith(f, "--$(k)="), known)
     end
     isempty(unknown) || throw(ArgumentError("unknown flag(s): $(join(unknown, ", "))"))
@@ -102,6 +103,8 @@ normalize   = hasflag("normalize")
 clip        = !hasflag("no-clip")
 split_name  = flagval("split", "")      # validated against the table once the file is loaded
 split_bins  = parse(Int, flagval("split-bins", "0"))   # 0 = one panel per distinct value
+singlezone  = hasflag("singlezone")
+zone        = singlezone ? "singlezone" : "multizone"
 
 # Past this the wheels are too small to read and the colour bar's column squeezes them further.
 # Reachable only by accident — splitting on a continuous column without --split-bins — so the
@@ -120,13 +123,17 @@ end
 ## -------------------------------------------------------------------------- load the Step-6 file
 
 in_jld2 = isdir(step6_path) ?
-    joinpath(step6_path, "step6_improvement_factors_$(code).jld2") : step6_path
+    joinpath(step6_path, "$(zone)_step6_improvement_factors_$(code).jld2") : step6_path
 isfile(in_jld2) || error("no Step-6 file at $(in_jld2)")
 
 step6 = jldopen(in_jld2, "r") do f
     (step6_table = f["step6_table"], baseline = f["baseline"],
-     keep_cutoff = haskey(f, "keep_cutoff") ? f["keep_cutoff"] : false)
+     keep_cutoff = haskey(f, "keep_cutoff") ? f["keep_cutoff"] : false,
+     # files from before the zone switch existed were all run with parallel fusion zones
+     singlezone = haskey(f, "singlezone") ? f["singlezone"] : false)
 end
+step6.singlezone == singlezone ||
+    error("$(in_jld2) was simulated with singlezone = $(step6.singlezone); pass --singlezone to match")
 
 step6_table = step6.step6_table
 nrow(step6_table) == 0 && error("the Step-6 table is empty: nothing to plot")
@@ -686,7 +693,7 @@ end
 
 suffix = split_col === nothing ? "" : "_by_$(split_col)"
 out_pdf = let s = flagval("out", "")
-    isempty(s) ? joinpath(output_path, "step6_improvement_histogram_$(code)$(suffix).pdf") : s
+    isempty(s) ? joinpath(output_path, "$(zone)_step6_improvement_histogram_$(code)$(suffix).pdf") : s
 end
 savefig(fig, out_pdf)
 default(; prev_defaults...)

@@ -12,19 +12,27 @@ index = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 k_max = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 50
 input_path = length(ARGS) >= 5 ? ARGS[5] : "./"
 output_path = length(ARGS) >= 6 ? ARGS[6] : "./"
+singlezone = length(ARGS) >= 7 ? parse(Bool, ARGS[7]) : false   # one fusion zone vs. as many as needed
+zone = singlezone ? "singlezone" : "multizone"                    # prefix of every input/output file
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
 # Steps 3+4 reuse the gate fidelity and noise model Step 2 (run_prune.jl) pruned with.
-@load joinpath(input_path, "multizone_pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
+@load joinpath(input_path, "$(zone)_pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
+# Files pruned before the zone switch existed were all run with parallel fusion zones.
+get(run_info, :singlezone, false) == singlezone ||
+    error("run_info.singlezone = $(get(run_info, :singlezone, false)) does not match the requested singlezone = $(singlezone)")
 gate_fidelity_qec = run_info.gate_fidelity_qec
 memory_model = Symbol(error_model)
 seed = run_info.seed
 
-target_samples = run_info.target_samples
+# Files pruned before the round-based stopping rule store target_samples instead.
+haskey(run_info, :target_rounds) ||
+    @warn "run_info has no target_rounds (pruned with the old target_samples rule); using 1000 rounds"
+target_rounds = get(run_info, :target_rounds, 1000)
 max_wallclock = run_info.max_wallclock
 
-@info "Settings" code gate_fidelity_qec error_model target_samples max_wallclock
+@info "Settings" code gate_fidelity_qec error_model target_rounds max_wallclock singlezone
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
@@ -57,7 +65,7 @@ const fidelity_grid = order_fidelity_grid((
 ))
 
 member = members[index]
-sim_kwargs = (seed = seed, target_samples = target_samples, max_wallclock = max_wallclock)
+sim_kwargs = (seed = seed, target_rounds = target_rounds, max_wallclock = max_wallclock, singlezone = singlezone)
 
 @info "Steps 3+4: member $(index), $(prod(length, fidelity_grid)) fidelity configurations" p_mem_max τ_max sim_kwargs
 
@@ -150,9 +158,9 @@ step4_log = isempty(log_rows) ? DataFrame() : DataFrame(log_rows)
 println("Steps 3+4: $(nrow(step3_table)) timing-cutoff pairs in U_{t,c}, $(nrow(step4_table)) minimal " *
         "feasible (h_t, c, h_f) ($(round(time() - start; digits = 1)) s)")
 ##
-jldsave(joinpath(output_path, "U_t_member$(index)_timing_cutoff_pairs_$(code).jld2");
+jldsave(joinpath(output_path, "$(zone)_U_t_member$(index)_timing_cutoff_pairs_$(code).jld2");
     p_mem_max, τ_max, T_coh_data, sim_kwargs,
     step3_table)
-jldsave(joinpath(output_path, "bfs_member$(index)_minimal_fidelity_$(code).jld2");
+jldsave(joinpath(output_path, "$(zone)_bfs_member$(index)_minimal_fidelity_$(code).jld2");
     p_mem_max, τ_max, T_coh_data, sim_kwargs, gate_fidelity_qec,
     timing_grid, fidelity_grid, step4_table, step4_log)

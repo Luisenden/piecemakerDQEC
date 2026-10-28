@@ -162,6 +162,31 @@ const RawGHZRow = NamedTuple{
           Float64, Float64, Float64},
 }
 
+# Completions per generator that make one QEC round: Steane checks share X/Z supports, so
+# every support (one entry of GENERATORS) needs 2 completions.
+const ROUND_REQUIRED_COUNT = BASE_CODE == "Steane713" ? 2 : 1
+
+# Raw GHZ rows plus the round bookkeeping. A round of stabilizer measurements is complete once
+# every generator has been completed ROUND_REQUIRED_COUNT times since the previous round
+# (same rule as round_completion_times in utils_pseudothreshold.jl).
+mutable struct GHZLog
+    rows::Vector{RawGHZRow}
+    counts::Vector{Int}     # completions per generator since the last completed round
+    n_rounds::Int
+    target_rounds::Int
+end
+GHZLog(target_rounds::Int) = GHZLog(RawGHZRow[], zeros(Int, length(GENERATORS)), 0, target_rounds)
+
+function log_ghz!(log::GHZLog, row::RawGHZRow)
+    push!(log.rows, row)
+    log.counts[row.generator_idx] += 1
+    if all(>=(ROUND_REQUIRED_COUNT), log.counts)
+        log.n_rounds += 1
+        fill!(log.counts, 0)
+    end
+    return log
+end
+
 @info "Using code $(code) with $(N_DATA) data qubits on $(N_NODES) physical nodes; node partition = $(NODE_PARTITION)"
 
 # function noisy_bell_state(target_fidelity::Float64=0.97)
@@ -183,7 +208,7 @@ function next_attempt_id!(counter)
     return counter[]
 end
 
-@resumable function consumer(sim, net, pm_slot::RegRef, gen_set_index::Int, attempt_id::Int, iscutoff::Bool, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes}, Δt_readout::Float64, readout_fidelity::Float64)
+@resumable function consumer(sim, net, pm_slot::RegRef, gen_set_index::Int, attempt_id::Int, iscutoff::Bool, log_data::GHZLog, pair_times::Dict{Int,PairTimes}, Δt_readout::Float64, readout_fidelity::Float64)
     @yield lock(pm_slot)
     # Re-check under the lock: the cutoff timer and the completing fusion can both schedule a
     # consumer for the same attempt; whichever gets the lock second must not touch the slot again
@@ -273,7 +298,7 @@ end
         @assert isnan(ordered_times[1].cnot) "The piecemaker pair must not have a CNOT time."
         @assert all(!isnan(pt.cnot) && !isnan(pt.meas) for pt in ordered_times[2:4]) "Missing fusion times."
         pt = ordered_times
-        push!(log_data, (
+        log_ghz!(log_data, (
             timesteps = time_of_consumption,
             generator_idx = gen_set_index,
             t_pm_meas = t_pm_meas,
@@ -281,6 +306,8 @@ end
             cnot_2 = pt[2].cnot, cnot_3 = pt[3].cnot, cnot_4 = pt[4].cnot,
             meas_2 = pt[2].meas, meas_3 = pt[3].meas, meas_4 = pt[4].meas,
         ))
+        # Ends the enclosing run() at exactly the GHZ state that completes the target round.
+        log_data.n_rounds >= log_data.target_rounds && throw(StopSimulation())
     end
 end
 
@@ -359,8 +386,9 @@ end
     cutoff::Float64,
     Δt_rotation_shuttle::Float64,
     global_pause::Ref{Float64},
-    log_data::Vector{RawGHZRow},
+    log_data::GHZLog,
     pair_times::Dict{Int,PairTimes},
+    singlezone::Bool,
 )
     while !isempty(pending_batches)
         msgs, batch_time = popfirst!(pending_batches)
@@ -419,7 +447,11 @@ end
                 unlock(net[1][switchslot_idx])
             else
                 @debug "Found potential piecemaker slots: $(pmslot_msgs)"
-                @process FusionConsumer(sim, net, pmslot_to_fuse_with, msg.slot.idx, clientslot_idx, gen_set_idx, Int(min_counter), Int(tagid), Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, log_data, pair_times)
+                fusion_proc = @process FusionConsumer(sim, net, pmslot_to_fuse_with, msg.slot.idx, clientslot_idx, gen_set_idx, Int(min_counter), Int(tagid), Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, log_data, pair_times)
+                # Single fusion zone: the switch is busy until this fusion (and, if it completes the
+                # GHZ state, the piecemaker readout) is done before it handles the next Bell pair.
+                # Otherwise every fusion gets its own zone and only the slot locks serialise them.
+                singlezone && @yield fusion_proc
             end
         end
     end
@@ -439,8 +471,9 @@ end
     cutoff::Float64,
     Δt_rotation_shuttle::Float64,
     global_pause::Ref{Float64},
-    log_data::Vector{RawGHZRow},
+    log_data::GHZLog,
     pair_times::Dict{Int,PairTimes},
+    singlezone::Bool,
 )
     pending_batches = Tuple{Vector{Any}, Float64}[]
     worker_running = Ref(false)
@@ -485,13 +518,14 @@ end
                 global_pause,
                 log_data,
                 pair_times,
+                singlezone,
             )
         end
     end
 end
 
 
-@resumable function CutoffTimerProt(sim, net, pm_slot::RegRef, cutoff::Float64, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes}, batch_time::Float64, attempt_id::Int)
+@resumable function CutoffTimerProt(sim, net, pm_slot::RegRef, cutoff::Float64, log_data::GHZLog, pair_times::Dict{Int,PairTimes}, batch_time::Float64, attempt_id::Int)
     # this process is started by the switch_listener and consumes the GHZ state when the cutoff time is reached
     @yield timeout(sim, max(0.0, batch_time+ cutoff - now(sim)))
     msg = query(pm_slot, :isPiecemaker, attempt_id)
@@ -504,7 +538,7 @@ end
 
 
 
-@resumable function FusionConsumer(sim, net, pmslot_to_fuse_with::RegRef, switchslot_idx::Int, clientslot_idx::Int, gen_set_idx::Int, attempt_id::Int, tagid::Int, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, log_data::Vector{RawGHZRow}, pair_times::Dict{Int,PairTimes})
+@resumable function FusionConsumer(sim, net, pmslot_to_fuse_with::RegRef, switchslot_idx::Int, clientslot_idx::Int, gen_set_idx::Int, attempt_id::Int, tagid::Int, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64, log_data::GHZLog, pair_times::Dict{Int,PairTimes})
 
     fused = @yield @process fusion(sim, net, pmslot_to_fuse_with, net[1][switchslot_idx], net[1+switchslot_idx][clientslot_idx], gen_set_idx, attempt_id, tagid, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, pair_times)
     fused || return # the attempt was discarded by the cutoff before this fusion could start
@@ -588,7 +622,7 @@ end
 end
 
 function prepare_sim(n_nodes, T_link::Float64, F_link::Float64, link_success_prob::Float64, attempt_t::Float64, Δt_CNOTgate::Float64, gate_fidelity::Float64, Δt_readout::Float64, readout_fidelity::Float64,
-    error_model::String, cutoff::Float64, Δt_rotation_shuttle::Float64, log_data::Vector{RawGHZRow})
+    error_model::String, cutoff::Float64, Δt_rotation_shuttle::Float64, log_data::GHZLog, singlezone::Bool)
 
     states_representation = CliffordRepr()#QuantumOpticsRepr()
     @debug "Preparing simulation with parameters: n_nodes=$(n_nodes), T_link=$(T_link), cutoff=$(cutoff), F_link=$(F_link), link_success_prob=$(link_success_prob), attempt_time=$(attempt_t)"
@@ -618,7 +652,7 @@ function prepare_sim(n_nodes, T_link::Float64, F_link::Float64, link_success_pro
     global_pause = Ref(0.0)
     pair_times = Dict{Int,PairTimes}()
 
-    @process switch_listener(sim, net, attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, cutoff, Δt_rotation_shuttle, global_pause, log_data, pair_times)
+    @process switch_listener(sim, net, attempt_counter, Δt_CNOTgate, gate_fidelity, Δt_readout, readout_fidelity, cutoff, Δt_rotation_shuttle, global_pause, log_data, pair_times, singlezone)
     @process naive_entangler(sim, net, n_nodes, F_link, link_success_prob, attempt_t, Δt_rotation_shuttle)
     return sim
 end
@@ -626,29 +660,6 @@ end
 
 function get_cutoff(T_coherence, error_budget)
     return -T_coherence * log(1 - 4/3 * (1 - (1-error_budget)^0.25))
-end
-
-function check_convergence(log_data, generators; min_samples = 1000)
-    isempty(log_data) && return false
-
-    genidx = getproperty.(log_data, :generator_idx)
-    n_data = maximum(vcat(generators...))
-
-    # Preserve the old stopping rule: every data qubit needs min_samples
-    # inter-measurement intervals, and every stabilizer needs min_samples
-    # successfully completed GHZ fidelity samples.
-    for q in 1:n_data
-        relevant_gens = findall(g -> q in g, generators)
-        n_measurements = count(g -> g in relevant_gens, genidx)
-        n_waits = max(n_measurements - 1, 0)
-        n_waits < min_samples && return false
-    end
-
-    for g in eachindex(generators)
-        count(==(g), genidx) < min_samples && return false
-    end
-
-    return true
 end
 
 """
@@ -659,6 +670,14 @@ No summary statistics are constructed. The returned `raw_events` DataFrame has
 one row per successfully consumed GHZ state; see `RawGHZRow` for the columns.
 Pairs are listed in fusion order (piecemaker first). Pass the rows to
 `ghz_fidelities_from_log` (GHZfidelity_closedform.jl) to obtain fidelities.
+
+The simulation stops at the GHZ state that completes round `target_rounds` of stabilizer
+measurements (see `GHZLog`), or once `max_wallclock` seconds have passed, checked every
+`add_runtime_batch` of simulated time; `converged` tells which.
+
+`singlezone = true` gives the switch a single fusion zone, so fusions (and the readout of a
+completed GHZ state) run one at a time in arrival order; `false` runs as many in parallel as
+needed, limited only by the slot locks.
 """
 function run_single_configuration(;
     F_link::Float64,
@@ -672,12 +691,13 @@ function run_single_configuration(;
     Δt_rotation_shuttle::Float64,
     cutoff::Float64,
     seed::Int = 1234,
-    target_samples::Int = 5000,
+    target_rounds::Int = 1000,
     max_wallclock::Float64 = 60.0,
     add_runtime_batch::Float64 = 0.1,
+    singlezone::Bool = false,
 )
     Random.seed!(seed)
-    log_data = RawGHZRow[]
+    log_data = GHZLog(target_rounds)
 
     sim = prepare_sim(
         N_NODES,
@@ -693,35 +713,31 @@ function run_single_configuration(;
         cutoff,
         Δt_rotation_shuttle,
         log_data,
+        singlezone,
     )
 
     t_wallclock = 0.0
-    runtime = 0.0
-    converged = false
 
-    while true
+    # A batch returns early when the consumer throws StopSimulation at the target round.
+    while log_data.n_rounds < target_rounds && t_wallclock <= max_wallclock
         t_wallclock += @elapsed run(sim, now(sim) + add_runtime_batch)
-        runtime += add_runtime_batch
-
-        if check_convergence(log_data, GENERATORS; min_samples = target_samples)
-            converged = true
-            @info "Converged after $(t_wallclock) seconds"
-            break
-        end
-
-        if t_wallclock > max_wallclock
-            @warn "Reached maximum wallclock time $(max_wallclock) seconds without convergence"
-            break
-        end
     end
 
-    raw_events = DataFrame(log_data)
+    converged = log_data.n_rounds >= target_rounds
+    if converged
+        @info "Completed $(log_data.n_rounds) rounds after $(t_wallclock) seconds"
+    else
+        @warn "Reached maximum wallclock time $(max_wallclock) seconds after $(log_data.n_rounds) of $(target_rounds) rounds"
+    end
+
+    raw_events = DataFrame(log_data.rows)
     !isempty(raw_events) && sort!(raw_events, :timesteps)
 
     return (
         raw_events = raw_events,
-        runtime = runtime,
+        runtime = now(sim),
         wallclock_time = t_wallclock,
+        n_rounds = log_data.n_rounds,
         converged = converged,
     )
 end

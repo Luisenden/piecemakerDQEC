@@ -22,8 +22,9 @@ result = run_single_configuration(
     cutoff = Inf,
 
     seed = 1234,
-    target_samples = 2000,
+    target_rounds = 1000,
     max_wallclock = 60.0,
+    singlezone = false,
 )
 
 df_raw = result.raw_events

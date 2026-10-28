@@ -99,7 +99,7 @@ end
     if SIM_WALL > 0
         @testset "event simulation ($(code))" begin
             result = run_single_configuration(; SIMPARS..., seed = 1234,
-                                              target_samples = 100, max_wallclock = SIM_WALL)
+                                              target_rounds = 50, max_wallclock = SIM_WALL)
             df = result.raw_events
             @info "simulated GHZ states" n = nrow(df) converged = result.converged
             @test nrow(df) > 0

@@ -38,15 +38,16 @@
 # Usage:
 #   julia --project=src src/plot_bottleneck.jl <step6_path> [output_path] [flags]
 #
-#   step6_path   step6_improvement_factors_<code>.jld2, or the folder holding it (Step 6)
-#   output_path  where step6_bottleneck_by_k_<code>.pdf is written; defaults to ./
+#   step6_path   <zone>_step6_improvement_factors_<code>.jld2, or the folder holding it (Step 6)
+#   output_path  where <zone>_step6_bottleneck_by_k_<code>.pdf is written; defaults to ./
 #
 #   --code=NAME     code tag in the file names (default Steane713)
+#   --singlezone    single-fusion-zone files (<zone> = singlezone); default multizone
 #   --by=COLUMN     bar on this column instead of k; any integer-valued or few-valued column of
 #                   the Step-6 table (`member`, `n_cutoffs`, a hardware axis, …)
 #   --split=COLUMN  colour the segments by this column instead of IF_bottleneck; any few-valued
 #                   column, typically a hardware axis (`F_link`, `T_coherence`, …). The figure
-#                   is then named after it: step6_F_link_by_k_<code>.pdf
+#                   is then named after it: <zone>_step6_F_link_by_k_<code>.pdf
 #   --normalize     each bar to its own height, so the segments are shares of that tier rather
 #                   than counts. The tiers hold very different numbers of solutions, so this is
 #                   the view to compare them on; the counts are the view of where the frontier is.
@@ -58,7 +59,7 @@
 #                   column with a value per solution (p_kept, cutoff) has far more bars than
 #                   labels that fit, so only an evenly spaced subset is labelled; this is the
 #                   override when the estimate is wrong for your figure size.
-#   --out=FILE      write here instead of <output_path>/step6_bottleneck_by_k_<code>.pdf
+#   --out=FILE      write here instead of <output_path>/<zone>_step6_bottleneck_by_k_<code>.pdf
 #
 # Needs a Step-6 file built with --keep-cutoff to say anything about the cutoff: without it
 # Step 6 keeps one row per hardware point and its k is whichever one Step 5's tie-break picked,
@@ -85,7 +86,7 @@ end
 
 let known = ("code", "by", "split", "max-xticks", "out")
     unknown = filter(flags) do f
-        f in ("--normalize", "--no-none", "--csv") && return false
+        f in ("--normalize", "--no-none", "--csv", "--singlezone") && return false
         return !any(k -> startswith(f, "--$(k)="), known)
     end
     isempty(unknown) || throw(ArgumentError("unknown flag(s): $(join(unknown, ", "))"))
@@ -99,17 +100,23 @@ drop_none   = hasflag("no-none")
 write_csv   = hasflag("csv")
 by_name     = flagval("by", "k")
 split_name  = flagval("split", "IF_bottleneck")
+singlezone  = hasflag("singlezone")
+zone        = singlezone ? "singlezone" : "multizone"
 
 ## -------------------------------------------------------------------------- load the Step-6 file
 
 in_jld2 = isdir(step6_path) ?
-    joinpath(step6_path, "step6_improvement_factors_$(code).jld2") : step6_path
+    joinpath(step6_path, "$(zone)_step6_improvement_factors_$(code).jld2") : step6_path
 isfile(in_jld2) || error("no Step-6 file at $(in_jld2)")
 
 step6 = jldopen(in_jld2, "r") do f
     (step6_table = f["step6_table"], baseline = f["baseline"],
-     keep_cutoff = haskey(f, "keep_cutoff") ? f["keep_cutoff"] : false)
+     keep_cutoff = haskey(f, "keep_cutoff") ? f["keep_cutoff"] : false,
+     # files from before the zone switch existed were all run with parallel fusion zones
+     singlezone = haskey(f, "singlezone") ? f["singlezone"] : false)
 end
+step6.singlezone == singlezone ||
+    error("$(in_jld2) was simulated with singlezone = $(step6.singlezone); pass --singlezone to match")
 
 step6_table = step6.step6_table
 nrow(step6_table) == 0 && error("the Step-6 table is empty: nothing to plot")
@@ -393,7 +400,7 @@ for j in 1:nseg
          label = labels[j])
 end
 
-base = "step6_$(split_col === :IF_bottleneck ? "bottleneck" : split_col)_by_$(by_col)_$(code)"
+base = "$(zone)_step6_$(split_col === :IF_bottleneck ? "bottleneck" : split_col)_by_$(by_col)_$(code)"
 out_pdf = let s = flagval("out", "")
     isempty(s) ? joinpath(output_path, base * ".pdf") : s
 end

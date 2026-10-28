@@ -5,8 +5,10 @@ index       = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 231
 input_path  = length(ARGS) >= 2 ? ARGS[2] :
     "...4_backup_project_piecemakerDQEC/output_v1_cutoff/"
 output_path = length(ARGS) >= 3 ? ARGS[3] : "./"
-target_samp = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : nothing
+target_rnds = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : nothing
 max_wall    = length(ARGS) >= 5 ? parse(Float64, ARGS[5]) : nothing   # override max_wallclock
+singlezone  = length(ARGS) >= 6 ? parse(Bool, ARGS[6]) : false        # one fusion zone vs. as many as needed
+zone        = singlezone ? "singlezone" : "multizone"                 # prefix of every input/output file
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
@@ -39,9 +41,17 @@ const fidelity_grid = order_fidelity_grid((
 ))
 
 ## Load one member of U_{t,∞} with its timing-cutoff pairs from Step 3.
-@load joinpath(input_path, "U_t_member$(index)_timing_cutoff_pairs_$(code).jld2") step3_table sim_kwargs p_mem_max τ_max
+@load joinpath(input_path, "$(zone)_U_t_member$(index)_timing_cutoff_pairs_$(code).jld2") step3_table sim_kwargs p_mem_max τ_max
+# Step-3 files from before the zone switch existed were all run with parallel fusion zones.
+get(sim_kwargs, :singlezone, false) == singlezone ||
+    error("sim_kwargs.singlezone = $(get(sim_kwargs, :singlezone, false)) does not match the requested singlezone = $(singlezone)")
 max_wall === nothing || (sim_kwargs = merge(sim_kwargs, (max_wallclock = max_wall,)))
-target_samp === nothing || (sim_kwargs = merge(sim_kwargs, (target_samples = target_samp,)))
+# Step-3 files from before the round-based stopping rule carry target_samples instead.
+if haskey(sim_kwargs, :target_samples)
+    @warn "sim_kwargs use the old target_samples rule; dropped in favour of target_rounds"
+    sim_kwargs = Base.structdiff(sim_kwargs, NamedTuple{(:target_samples,)})
+end
+target_rnds === nothing || (sim_kwargs = merge(sim_kwargs, (target_rounds = target_rnds,)))
 
 @info "Step 4: member $(index), $(nrow(step3_table)) timing-cutoff pairs, " *
       "$(prod(length, fidelity_grid)) fidelity configurations" p_mem_max τ_max sim_kwargs
@@ -93,7 +103,7 @@ for (i, r) in enumerate(eachrow(step3_table))
         seconds = time() - t_row,
     ))
 
-    # The re-run is cut by max_wallclock as well as by target_samples, so a faster or slower
+    # The re-run is cut by max_wallclock as well as by target_rounds, so a faster or slower
     # machine logs a different number of GHZ states and τ̂ moves a little.
     if isfinite(r.p_mem) && abs(ev.p_mem - r.p_mem) > 0.01 * r.p_mem
         @warn "p_mem of the re-run differs from Step 3 by more than 1 %" h_t cutoff=ev.cutoff ev.p_mem r.p_mem
@@ -149,6 +159,6 @@ step4_log = isempty(log_rows) ? DataFrame() : DataFrame(log_rows)
 println("Step 4: $(nrow(step4_table)) minimal feasible (h_t, c, h_f) over " *
         "$(nrow(step3_table)) timing-cutoff pairs ($(round(time() - t_start; digits = 1)) s)")
 ##
-jldsave(joinpath(output_path, "bfs_member$(index)_minimal_fidelity_$(code).jld2");
+jldsave(joinpath(output_path, "$(zone)_bfs_member$(index)_minimal_fidelity_$(code).jld2");
     p_mem_max, τ_max, T_COH_DATA, sim_kwargs, gate_fidelity_qec,
     timing_grid, fidelity_grid, step4_table, step4_log)

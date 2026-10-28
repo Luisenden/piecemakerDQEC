@@ -544,10 +544,11 @@ end
 
 Times at which one complete round of stabilizer measurements has finished: every generator
 has been completed at least `required_count` times since the previous round (Steane: the X and
-Z checks share supports, so every support needs 2 completions).
+Z checks share supports, so every support needs 2 completions). Same rule as the round counter
+`GHZLog` that stops the simulation.
 """
 function round_completion_times(df_raw::DataFrame;
-        required_count::Int = (code == "Steane713" ? 2 : 1))
+        required_count::Int = ROUND_REQUIRED_COUNT)
     all_generators = collect(eachindex(GENERATORS))
     counts = Dict(g => 0 for g in all_generators)
     markers = Float64[]

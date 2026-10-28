@@ -1,10 +1,12 @@
 
 const code = length(ARGS) >= 1 ? ARGS[1] : ""
 const gate_fidelity_qec = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 1.0
-const target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1000
+const target_rounds = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1000
 const max_wallclock = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : 60.0
-const output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
-const seed = length(ARGS) >= 6 ? parse(Int, ARGS[6]) : 1234
+const singlezone = length(ARGS) >= 5 ? parse(Bool, ARGS[5]) : false 
+const output_path = length(ARGS) >= 6 ? ARGS[6] : "./"
+const seed = length(ARGS) >= 7 ? parse(Int, ARGS[7]) : 1234  # one fusion zone vs. as many as needed
+const zone = singlezone ? "singlezone" : "multizone"                    # prefix of every output file
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
@@ -25,7 +27,7 @@ const timing_grid = order_timing_grid((
     Δt_rotation_shuttle = [10e-6, 50e-6, 100e-6],                 # t_buff
     link_success_prob   = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5],         # p_link
 ))
-sim_kwargs = (seed = seed, target_samples = target_samples, max_wallclock = max_wallclock)
+sim_kwargs = (seed = seed, target_rounds = target_rounds, max_wallclock = max_wallclock, singlezone = singlezone)
 timing_cache = Dict{Any, Any}()
 
 start = time()
@@ -38,4 +40,4 @@ sim_kwargs = step2.sim_kwargs
 run_info = (; code, gate_fidelity_qec, sim_kwargs...)
 error_budget = (; p_mem_max, τ_max)
 T_coh_data = step2.T_coh_data
-@save joinpath(@__DIR__, "multizone_pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
+@save joinpath(@__DIR__, "$(zone)_pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data

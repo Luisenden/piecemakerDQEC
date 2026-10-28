@@ -11,11 +11,12 @@
 # kept a single cutoff per point, so there is only one. c = ∞ (k = 0) has no quantile and is left out.
 #
 # Usage:
-#   julia --project=src src/plot_minimal_p.jl <code> [input_path] [output_path] --row=i [--left=COLUMN]
+#   julia --project=src src/plot_minimal_p.jl <code> [input_path] [output_path] --row=i [--left=COLUMN] [--singlezone]
 #
 #   --row=i          row i of the Step-5 table (the [i] run_minimal.jl prints)
 #   --left=COLUMN    column on the left y axis, default p_mem; e.g. tau (= τ), cutoff, eps_star, margin
-#   writes minimal_requirements_<code>_vs_p_row<i>[_<COLUMN>].pdf
+#   --singlezone     read/write the single-fusion-zone files (<zone> = singlezone); default multizone
+#   writes <zone>_minimal_requirements_<code>_vs_p_row<i>[_<COLUMN>].pdf
 
 using JLD2
 using DataFrames
@@ -37,14 +38,15 @@ flag_value(name) = let i = findfirst(startswith("--$(name)="), flags)
 end
 row_flag = flag_value("row")
 left_flag = flag_value("left")
-known(f) = startswith(f, "--row=") || startswith(f, "--left=")
+known(f) = startswith(f, "--row=") || startswith(f, "--left=") || f == "--singlezone"
 all(known, flags) ||
-    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --row=i, --left=COLUMN")
+    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --row=i, --left=COLUMN, --singlezone")
+const zone = "--singlezone" in flags ? "singlezone" : "multizone"
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 row_flag == "" && error("Missing --row=i: the row whose configuration to plot")
 
-@load joinpath(input_path, "minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid keep_cutoff
+@load joinpath(input_path, "$(zone)_minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid keep_cutoff
 nrow(step5_table) == 0 && error("the Step-5 table is empty: nothing to plot")
 
 tnames, fnames = collect(keys(timing_grid)), collect(keys(fidelity_grid))
@@ -153,7 +155,7 @@ fig.subplots[1][:yaxis][:grid] = true
 hline!(fig, [last(ylims_left)]; color = :black, linewidth = 1, label = false)
 
 suffix = left === :p_mem ? "" : "_" * replace(String(left), "τ" => "tau")
-out_pdf = joinpath(output_path, "minimal_requirements_$(code)_vs_p_row$(row)$(suffix).pdf")
+out_pdf = joinpath(output_path, "$(zone)_minimal_requirements_$(code)_vs_p_row$(row)$(suffix).pdf")
 savefig(fig, out_pdf)
 
 println("Step 5 figure: $(left) and ε̂ against p_k = 1/k for the configuration of row $(row), at ",

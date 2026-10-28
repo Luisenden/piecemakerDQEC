@@ -31,10 +31,11 @@
 # Usage:
 #   julia --project=src src/run_improvements.jl <step5_path> [output_path] [flags]
 #
-#   step5_path   step5_minimal_requirements_<code>.jld2, or the folder holding it (Step 5)
-#   output_path  where step6_improvement_factors_<code>.{jld2,csv} are written; defaults to ./
+#   step5_path   <zone>_minimal_requirements_<code>.jld2, or the folder holding it (Step 5)
+#   output_path  where <zone>_step6_improvement_factors_<code>.{jld2,csv} are written; defaults to ./
 #
 #   --code=NAME            code tag in the file names (default Steane713)
+#   --singlezone           single-fusion-zone files (<zone> = singlezone); default multizone
 #   --keep-cutoff          one row per (h_t, h_f, c) instead of one per (h_t, h_f)
 #   --perfect-factor=X     IF of a parameter that is already perfect (F = 1), default 10
 #   --top=N                number of solutions listed in the report (default 25)
@@ -60,7 +61,7 @@ end
 
 let known = ("code", "perfect-factor", "top")
     unknown = filter(flags) do f
-        f in ("--keep-cutoff", "--no-csv") && return false
+        f in ("--keep-cutoff", "--no-csv", "--singlezone") && return false
         return !any(k -> startswith(f, "--$(k)="), known)
     end
     isempty(unknown) || throw(ArgumentError("unknown flag(s): $(join(unknown, ", "))"))
@@ -72,6 +73,8 @@ output_path = length(pos) >= 2 ? pos[2] : "./"
 keep_cutoff = hasflag("keep-cutoff")
 write_csv   = !hasflag("no-csv")
 n_top       = parse(Int, flagval("top", "25"))
+singlezone  = hasflag("singlezone")
+zone        = singlezone ? "singlezone" : "multizone"
 
 # A perfect parameter (F_readout = 1) has an infinite improvement factor under the :fidelity
 # definition. Infinities would swallow every aggregate and every plot axis, so they are
@@ -194,7 +197,7 @@ end
 ## -------------------------------------------------------------------------- load the Step-5 file
 
 in_jld2 = isdir(step5_path) ?
-    joinpath(step5_path, "step5_minimal_requirements_$(code).jld2") : step5_path
+    joinpath(step5_path, "$(zone)_minimal_requirements_$(code).jld2") : step5_path
 isfile(in_jld2) || error("no Step-5 file at $(in_jld2)")
 
 step5 = jldopen(in_jld2, "r") do f
@@ -202,8 +205,12 @@ step5 = jldopen(in_jld2, "r") do f
      timing_grid = f["timing_grid"], fidelity_grid = f["fidelity_grid"],
      p_mem_max = f["p_mem_max"], τ_max = f["τ_max"],
      keep_cutoff = haskey(f, "keep_cutoff") ? f["keep_cutoff"] : false,
-     n_frontier = haskey(f, "n_frontier") ? f["n_frontier"] : 0)
+     n_frontier = haskey(f, "n_frontier") ? f["n_frontier"] : 0,
+     # files from before the zone switch existed were all run with parallel fusion zones
+     singlezone = haskey(f, "sim_kwargs") ? get(f["sim_kwargs"], :singlezone, false) : false)
 end
+step5.singlezone == singlezone ||
+    error("$(in_jld2) was simulated with singlezone = $(step5.singlezone); pass --singlezone to match")
 
 step5_table = step5.step5_table
 nrow(step5_table) == 0 && error("the Step-5 table is empty: no frontier to compare")
@@ -332,16 +339,16 @@ println()
 
 ## ------------------------------------------------------------------------------------ save
 
-out_jld2 = joinpath(output_path, "step6_improvement_factors_$(code).jld2")
+out_jld2 = joinpath(output_path, "$(zone)_step6_improvement_factors_$(code).jld2")
 jldsave(out_jld2;
     step6_table, step6_axis,
     baseline = BASELINE, if_kind = IF_KIND, perfect_factor = PERFECT_FACTOR,
     timing_grid = step5.timing_grid, fidelity_grid = step5.fidelity_grid,
     p_mem_max = step5.p_mem_max, τ_max = step5.τ_max,
-    keep_cutoff, source = in_jld2)
+    keep_cutoff, singlezone, source = in_jld2)
 
 if write_csv
-    out_csv = joinpath(output_path, "step6_improvement_factors_$(code).csv")
+    out_csv = joinpath(output_path, "$(zone)_step6_improvement_factors_$(code).csv")
     CSV.write(out_csv, step6_table)
     println("Step 6: wrote $(nrow(step6_table)) rows to\n  $(out_jld2)\n  $(out_csv)")
 else

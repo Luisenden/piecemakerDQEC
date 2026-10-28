@@ -3,7 +3,7 @@
 # either set take that value.
 #
 # Both Step-5 tables are read as run_minimal.jl wrote them, never recomputed:
-# minimal_requirements_<code>.jld2 and minimal_requirements_<code>_partitioned.jld2.
+# <zone>_minimal_requirements_<code>.jld2 and <zone>_minimal_requirements_<code>_partitioned.jld2.
 #
 # A configuration that is feasible at several cutoffs appears once per cutoff in the table. To
 # avoid counting it more than once, rows with the same nine hardware axis values are merged into
@@ -18,10 +18,11 @@
 # takes are drawn. c = ∞ comes last and is labelled ∞.
 #
 # Usage:
-#   julia --project=src src/plot_minimal_compare.jl <code> <x_column> [input_path] [output_path] [--all-rows]
+#   julia --project=src src/plot_minimal_compare.jl <code> <x_column> [input_path] [output_path] [--all-rows] [--singlezone]
 #
 #   e.g. julia --project=src src/plot_minimal_compare.jl BB12_2_3 rate
-#   writes minimal_requirements_<code>_compare_<x_column>[_allrows].pdf.
+#   --singlezone reads/writes the single-fusion-zone files (<zone> = singlezone); default multizone.
+#   writes <zone>_minimal_requirements_<code>_compare_<x_column>[_allrows].pdf.
 
 using JLD2
 using DataFrames
@@ -39,8 +40,11 @@ x_col = length(pos) >= 2 ? Symbol(pos[2]) : Symbol("")
 input_path = length(pos) >= 3 ? pos[3] : "./"
 output_path = length(pos) >= 4 ? pos[4] : "./"
 
-all(==("--all-rows"), flags) || error("unknown flag(s): $(join(flags, ", ")); only --all-rows")
+known(f) = f in ("--all-rows", "--singlezone")
+all(known, flags) ||
+    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --all-rows, --singlezone")
 all_rows = "--all-rows" in flags
+const zone = "--singlezone" in flags ? "singlezone" : "multizone"
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 x_col == Symbol("") && error("Missing the column to count over, e.g. rate, F_link or T_coherence")
@@ -49,7 +53,7 @@ x_col == Symbol("") && error("Missing the column to count over, e.g. rate, F_lin
 
 """The Step-5 table of `name`, with the derived rate column, and the saved grids."""
 function load_step5(name)
-    file = joinpath(input_path, "minimal_requirements_$(name).jld2")
+    file = joinpath(input_path, "$(zone)_minimal_requirements_$(name).jld2")
     isfile(file) || error("$(file) not found; run run_minimal.jl for $(name) first")
     @load file step5_table timing_grid fidelity_grid
     nrow(step5_table) == 0 && error("the Step-5 table of $(name) is empty: nothing to plot")
@@ -163,7 +167,7 @@ for (j, s) in enumerate(SETS)
 end
 
 suffix = dedup || !hardware_only ? "" : "_allrows"
-out_pdf = joinpath(output_path, "minimal_requirements_$(code)_compare_$(x_col)$(suffix).pdf")
+out_pdf = joinpath(output_path, "$(zone)_minimal_requirements_$(code)_compare_$(x_col)$(suffix).pdf")
 savefig(fig, out_pdf)
 println("Step 5 compare over $(x_col): ",
         join(["$(s.label) $(nrow(t))" for (s, t) in zip(SETS, tables)], ", "),

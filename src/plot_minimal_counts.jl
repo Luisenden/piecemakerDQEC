@@ -8,10 +8,11 @@
 # last and is labelled ∞.
 #
 # Usage:
-#   julia --project=src src/plot_minimal_counts.jl <code> <x_column> <y_column> [input_path] [output_path]
+#   julia --project=src src/plot_minimal_counts.jl <code> <x_column> <y_column> [input_path] [output_path] [singlezone]
 #
 #   e.g. julia --project=src src/plot_minimal_counts.jl BB12_2_3 F_link T_coherence
-#   writes minimal_requirements_<code>_counts_<x_column>_<y_column>.pdf.
+#   singlezone = true reads/writes the single-fusion-zone files (<zone> = singlezone); default multizone.
+#   writes <zone>_minimal_requirements_<code>_counts_<x_column>_<y_column>.pdf.
 
 using JLD2
 using DataFrames
@@ -26,11 +27,12 @@ x_col = length(ARGS) >= 2 ? Symbol(ARGS[2]) : Symbol("")
 y_col = length(ARGS) >= 3 ? Symbol(ARGS[3]) : Symbol("")
 input_path = length(ARGS) >= 4 ? ARGS[4] : "./"
 output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
+const zone = length(ARGS) >= 6 && parse(Bool, ARGS[6]) ? "singlezone" : "multizone"
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 (x_col == Symbol("") || y_col == Symbol("")) && error("Missing the two columns to count over, e.g. F_link T_coherence")
 
-@load joinpath(input_path, "minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid
+@load joinpath(input_path, "$(zone)_minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid
 nrow(step5_table) == 0 && error("the Step-5 table is empty: nothing to plot")
 for col in (x_col, y_col)
     hasproperty(step5_table, col) || error("$(col) is not a column of the Step-5 table; " *
@@ -127,7 +129,7 @@ for i in 1:nx, j in 1:ny
 end
 annotate!(fig, [(i, j, cell_text(counts[j, i])) for i in 1:nx for j in 1:ny])
 
-out_pdf = joinpath(output_path, "minimal_requirements_$(code)_counts_$(x_col)_$(y_col).pdf")
+out_pdf = joinpath(output_path, "$(zone)_minimal_requirements_$(code)_counts_$(x_col)_$(y_col).pdf")
 savefig(fig, out_pdf)
 println("Step 5 counts: $(nrow(step5_table)) frontier rows over $(x_col) × $(y_col) ",
         "($(nx) × $(ny) cells, $(count(>(0), counts)) occupied), wrote $(out_pdf)")

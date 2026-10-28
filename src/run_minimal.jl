@@ -20,7 +20,10 @@
 # keep_cutoff = true instead lists every cutoff that attains a frontier point.
 #
 # Usage:
-#   julia --project=src src/run_minimal.jl <code> [input_path] [output_path] [keep_cutoff]
+#   julia --project=src src/run_minimal.jl <code> [input_path] [output_path] [keep_cutoff] [singlezone]
+#
+#   singlezone = true pools the single-fusion-zone files (singlezone_* prefix); the default
+#   false pools the parallel ones (multizone_* prefix).
 
 using JLD2
 using DataFrames
@@ -31,22 +34,24 @@ const code = length(ARGS) >= 1 ? ARGS[1] : ""
 input_path = length(ARGS) >= 2 ? ARGS[2] : "./"
 output_path = length(ARGS) >= 3 ? ARGS[3] : "./"
 keep_cutoff = length(ARGS) >= 4 ? parse(Bool, ARGS[4]) : true
+singlezone = length(ARGS) >= 5 ? parse(Bool, ARGS[5]) : false
+zone = singlezone ? "singlezone" : "multizone"
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
 ## Load: the bfs and U_t file of each member, merged on the member index.
 
 function load_member(index)
-    @load joinpath(input_path, "bfs_member$(index)_minimal_fidelity_$(code).jld2") p_mem_max τ_max T_coh_data sim_kwargs gate_fidelity_qec timing_grid fidelity_grid step4_table step4_log
-    @load joinpath(input_path, "U_t_member$(index)_timing_cutoff_pairs_$(code).jld2") step3_table
+    @load joinpath(input_path, "$(zone)_bfs_member$(index)_minimal_fidelity_$(code).jld2") p_mem_max τ_max T_coh_data sim_kwargs gate_fidelity_qec timing_grid fidelity_grid step4_table step4_log
+    @load joinpath(input_path, "$(zone)_U_t_member$(index)_timing_cutoff_pairs_$(code).jld2") step3_table
     return (; index, p_mem_max, τ_max, T_coh_data, sim_kwargs, gate_fidelity_qec,
               timing_grid, fidelity_grid, step4_table, step4_log, step3_table)
 end
 
-bfs_re = Regex("^bfs_member(\\d+)_minimal_fidelity_$(code)\\.jld2\$")
+bfs_re = Regex("^$(zone)_bfs_member(\\d+)_minimal_fidelity_$(code)\\.jld2\$")
 indices = sort([parse(Int, m.captures[1])
                 for m in (match(bfs_re, f) for f in readdir(input_path)) if m !== nothing])
-isempty(indices) && error("no bfs_member<index>_minimal_fidelity_$(code).jld2 found in $(input_path)")
+isempty(indices) && error("no $(zone)_bfs_member<index>_minimal_fidelity_$(code).jld2 found in $(input_path)")
 
 data = [load_member(index) for index in indices]
 
@@ -56,6 +61,8 @@ data = [load_member(index) for index in indices]
 for d in data
     (d.timing_grid, d.fidelity_grid, d.τ_max) == (timing_grid, fidelity_grid, τ_max) ||
         error("member $(d.index): grids or τ_max differ from member $(data[1].index)")
+    get(d.sim_kwargs, :singlezone, false) == singlezone ||
+        error("member $(d.index): sim_kwargs.singlezone does not match the requested singlezone = $(singlezone)")
 end
 
 tnames, fnames = keys(timing_grid), keys(fidelity_grid)
@@ -184,11 +191,11 @@ println()
 
 ## Save
 
-jldsave(joinpath(output_path, "minimal_requirements_$(code).jld2");
+jldsave(joinpath(output_path, "$(zone)_minimal_requirements_$(code).jld2");
     p_mem_max, τ_max, T_coh_data, sim_kwargs, gate_fidelity_qec,
     timing_grid, fidelity_grid, keep_cutoff,
     step5_table, step5_coverage, step5_status,
     n_pooled = nrow(pooled), n_frontier = length(front))
-CSV.write(joinpath(output_path, "minimal_requirements_$(code).csv"), step5_table)
+CSV.write(joinpath(output_path, "$(zone)_minimal_requirements_$(code).csv"), step5_table)
 println("Step 5: wrote $(nrow(step5_table)) frontier rows to $(output_path) ",
         @sprintf("(%.1f s)", time() - t_start))

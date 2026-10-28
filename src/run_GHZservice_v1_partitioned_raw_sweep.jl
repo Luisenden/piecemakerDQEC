@@ -5,7 +5,7 @@ using JLD2
 # Command-line arguments retain the meaning of the original script.
 const code = length(ARGS) >= 1 ? ARGS[1] : "Steane7"
 const error_model = length(ARGS) >= 2 ? ARGS[2] : "depolarizing"
-target_samples = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 5000
+target_rounds = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1000
 global_idx = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 1
 output_path = length(ARGS) >= 5 ? ARGS[5] : "./"
 max_wallclock = length(ARGS) >= 6 ? parse(Float64, ARGS[6]) : 60.0
@@ -76,7 +76,7 @@ for link_success_prob in link_success_probs
                 Δt_rotation_shuttle = Δt_rotation_shuttle,
                 cutoff = cutoff,
                 seed = seed,
-                target_samples = target_samples,
+                target_rounds = target_rounds,
                 max_wallclock = max_wallclock,
             )
 
