@@ -34,10 +34,13 @@ start = time()
 step2 = prune_timing_configurations!(timing_cache, timing_grid, τ_max; sim_kwargs = sim_kwargs)
 println("Step 2: $(length(step2.members)) of $(prod(length, timing_grid)) timing configurations survive " *
         "($(step2.n_simulations) simulations, $(round(time() - start; digits = 1)) s)")
+
+# cycle-time estimate τ̂ and its batch-means standard error τ_se for every simulated configuration
+evaluations = summary_table(collect(values(timing_cache)))
 ##
 members = step2.members
 sim_kwargs = step2.sim_kwargs
 run_info = (; code, gate_fidelity_qec, sim_kwargs...)
 error_budget = (; p_mem_max, τ_max)
 T_coh_data = step2.T_coh_data
-@save joinpath(@__DIR__, "$(zone)_pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
+@save joinpath(@__DIR__, "$(zone)_pruned_timing_configurations_$(code).jld2") members evaluations run_info error_budget T_coh_data
