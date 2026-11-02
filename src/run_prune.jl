@@ -24,7 +24,7 @@ const timing_grid = order_timing_grid((
     attempt_time        = [0.1e-6, 0.5e-6, 1e-6, 10e-6],          # t_att
     Δt_CNOTgate         = [1e-6, 10e-6, 100e-6, 250e-6],          # t_CNOT
     Δt_readout          = [0.1e-3, 1e-3, 2e-3],                   # t_ro
-    Δt_rotation_shuttle = [10e-6, 50e-6, 100e-6],                 # t_buff
+    Δt_rotation_shuttle = [10e-6, 50e-6, 100e-6, 500e-6],         # t_buff
     link_success_prob   = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5],         # p_link
 ))
 sim_kwargs = (seed = seed, target_rounds = target_rounds, max_wallclock = max_wallclock, singlezone = singlezone)
