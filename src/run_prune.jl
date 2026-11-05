@@ -11,11 +11,8 @@ code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
-## Step 1: find the break-even memory budget (p_mem^max, τ_max) for the QEC code and gate fidelity.
-p_mem_max = find_pmem_max(qec_parity_checks(code), gate_fidelity_qec; seed=seed)
 
-τ_max = t_cycle(p_mem_max; T_coh = T_COH_DATA)
-@info "Break-even memory budget" p_mem_max τ_max
+@load joinpath(@__DIR__, "error_budget_$(code).jld2") p_mem_max τ_max
 ## Step 2: prune the timing configurations
 
 # Candidate values per timing parameter (any order; sorted by order_timing_grid).
