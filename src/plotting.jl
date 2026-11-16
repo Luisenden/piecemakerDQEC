@@ -4,6 +4,10 @@ using Plots
 using Plots.PlotMeasures: mm
 using LaTeXStrings
 
+default(fontfamily = "Computer Modern", tickfontsize = 12, guidefontsize = 12, legendfontsize = 12,
+        legendtitlefontsize = 12, titlefontsize = 12, plot_titlefontsize = 12,
+        colorbar_tickfontsize = 12, colorbar_titlefontsize = 12, annotationfontsize = 12)
+
 ##
 @load "ghz_service_v1_dephase_data.jld2" df
 df_dephase = df[df.num_clients .== 4, :]
@@ -111,7 +115,7 @@ for (i, T) in enumerate(Ts)
             xlabel = "Bell pair fidelity "* L"$F_{link}$",
             ylabel = i == 1 ? "GHZ Fidelity" : "",
             title = L"$T_{coherence} =$" * "$(T) s",
-            titlefontsize = 10,
+            titlefontsize = 12,
             legendtitle = "Purify",
             minorgrid = true,
             # ylims = (0.7, 1.0),
@@ -147,7 +151,7 @@ for (j, error_model) in enumerate(unique(summ.error_model))
             xlabel = "Bell pair fidelity "* L"$F_{link}$",
             ylabel = i == 1 ? "GHZ Fidelity  (Noise model: $(error_model))" : "",
             title = L"$T_{coherence} =$" * "$(T) s",
-            titlefontsize = 10,
+            titlefontsize = 12,
             legendtitle = "Purify",
             legend = i == length(Ts) ? :outerbottomright : false, 
             # ylims = (1e-2, 1e-0),
@@ -200,7 +204,7 @@ for (j, error_model) in enumerate(unique(summ.error_model))
             xlabel = "Bell pair fidelity "* L"$F_{link}$",
             ylabel = i == 1 ? "GHZ Fidelity  (Noise model: $(error_model))" : "",
             title = L"$T_{coherence} =$" * "$(T) s",
-            titlefontsize = 10,
+            titlefontsize = 12,
             legendtitle = "Purify",
             legend = i == length(Ts) ? :outerbottomright : false, 
             # ylims = (1e-2, 1e-0),
@@ -227,7 +231,7 @@ grouped_coherence_plot = grouped_coherence[(grouped_coherence.purify .== true), 
     group = :T_coherence,
     xlabel = "Link Fidelity",
     title = "Average share of abborted states\n due to purification failure",
-    titlefontsize = 10,
+    titlefontsize = 12,
     ylabel = "Average Share of Abborted States",
     legendtitle = "Coherence Time (s)",
     legend = :outertopright
@@ -249,7 +253,7 @@ grouped_coherence_plot = grouped_coherence[(grouped_coherence.purify .== true), 
     group = :T_coherence,
     xlabel = "Link Fidelity",
     title = "Average share of abborted states\n due to purification failure",
-    titlefontsize = 10,
+    titlefontsize = 12,
     ylabel = "Average Share of Abborted States",
     legendtitle = "Coherence Time (s)",
     legend = :outertopright
@@ -266,7 +270,7 @@ grouped_discarded_nondiscarded = grouped_discarded[grouped_discarded.discarded .
     seriescolor = [:blue :orange :blue :orange],
     xlabel = "Link Fidelity",
     title = "Number of protocol completions per second\n (only non-discarded states)",
-    titlefontsize = 10,
+    titlefontsize = 12,
     ylabel = "Number of protocol completions (Hz)",
     legendtitle = "Coherence Time (s)",
     legend = :outertopright
@@ -289,7 +293,7 @@ alllogs_non_discarded = alllogs[alllogs.discarded .== false, :]
     xlabel = "Time (s)",
     ylabel = "GHZ Fidelity",
     title = "GHZ Fidelity over time for different numbers of clients serviced\n (only non-discarded states)",
-    titlefontsize = 10,
+    titlefontsize = 12,
     legend_title = "Purified",
     legend = :outertopright
 )

@@ -112,7 +112,9 @@ series_label(row) = latexstring("\\hat{\\varepsilon} = $(latex_g(row.eps_hat)),\
 ## Draw
 
 fs = 12
-default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs - 2)
+default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs,
+        legendtitlefontsize = fs, titlefontsize = fs, plot_titlefontsize = fs,
+        colorbar_tickfontsize = fs, colorbar_titlefontsize = fs, annotationfontsize = fs)
 
 # Axes run top to bottom in grid order, timing first, so y grows downwards.
 fig = plot(;
@@ -139,7 +141,7 @@ hline!(fig, 1.5:1:ny - 0.5; color = :gray80, linewidth = 0.5, label = false)
 hline!(fig, [length(timing_grid) + 0.5]; color = :gray40, linewidth = 1, label = false)
 
 # The value of every slot, small and grey along the bottom edge of its cell.
-annotate!(fig, [(i, j + 0.32, text(fmt_axis(name, grids[name][slots[name][i]]), fs - 4, "Computer Modern", :gray45))
+annotate!(fig, [(i, j + 0.32, text(fmt_axis(name, grids[name][slots[name][i]]), fs, "Computer Modern", :gray45))
                 for (j, name) in enumerate(anames) for i in 1:n_slots[j]])
 
 # Series sit between the top of the cell and the value text, spread evenly in the selection order.

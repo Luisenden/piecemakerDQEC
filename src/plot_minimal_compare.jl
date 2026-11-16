@@ -135,7 +135,9 @@ end
 ## Draw
 
 fs = 12
-default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs + 2, legendfontsize = fs)
+default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs,
+        legendtitlefontsize = fs, titlefontsize = fs, plot_titlefontsize = fs,
+        colorbar_tickfontsize = fs, colorbar_titlefontsize = fs, annotationfontsize = fs)
 
 # Orange and blue, the first two series colours of plot_minimal_rows.jl, stay apart under the
 # common colour-vision deficiencies.
@@ -162,7 +164,7 @@ for (j, s) in enumerate(SETS)
     xs = (1:nx) .+ (j - (nset + 1) / 2) * w
     bar!(fig, xs, counts[:, j]; bar_width = 0.96w, fillcolor = SET_COLORS[j], linewidth = 0,
          label = "$(s.label) ($(nrow(tables[j])))")
-    annotate!(fig, [(x, n, text(string(n), fs - 2, "Computer Modern", :gray30, :bottom))
+    annotate!(fig, [(x, n, text(string(n), fs, "Computer Modern", :gray30, :bottom))
                     for (x, n) in zip(xs, counts[:, j]) if n > 0])
 end
 

@@ -18,7 +18,7 @@ p_mem_max = find_pmem_max(qec_parity_checks(code), gate_fidelity_qec)
 # as alternative use the stricter p_mem_max = pmem_peak(pmem_values, eps_star_values).
 τ_max = t_cycle(p_mem_max; T_coh = T_COH_DATA)
 
-@load joinpath(@__DIR__, "$(zone)_pruned_timing_configurations_$(code).jld2") members
+@load joinpath(@__DIR__, "$(zone)_pruned_timing_configurations_$(code)_Fg$(round(Int, 1e4 * gate_fidelity_qec)).jld2") members
 member = members[index]
 ##
 sim_kwargs = (seed = 1234, target_rounds = target_rounds, max_wallclock = max_wallclock, singlezone = singlezone)

@@ -56,13 +56,30 @@ isempty(indices) && error("no $(zone)_bfs_member<index>_minimal_fidelity_$(code)
 data = [load_member(index) for index in indices]
 
 # One frontier over different grids would be meaningless, since the Pareto comparison is on
-# indices. All members come from the same pruned file, so the grids and budget must agree exactly.
-(; p_mem_max, τ_max, T_coh_data, sim_kwargs, gate_fidelity_qec, timing_grid, fidelity_grid) = data[1]
+# indices. All members come from the same pruned file, so the fidelity grid and budget must agree
+# exactly.
+(; p_mem_max, τ_max, T_coh_data, sim_kwargs, gate_fidelity_qec, fidelity_grid) = data[1]
 for d in data
-    (d.timing_grid, d.fidelity_grid, d.τ_max) == (timing_grid, fidelity_grid, τ_max) ||
-        error("member $(d.index): grids or τ_max differ from member $(data[1].index)")
+    (d.fidelity_grid, d.τ_max) == (fidelity_grid, τ_max) ||
+        error("member $(d.index): fidelity grid or τ_max differs from member $(data[1].index)")
     get(d.sim_kwargs, :singlezone, false) == singlezone ||
         error("member $(d.index): sim_kwargs.singlezone does not match the requested singlezone = $(singlezone)")
+end
+
+# The timing grid saved per member is only the constant of run_cutoffrange_bfs.jl at run time,
+# not the ladder Step 2 pruned on (the members themselves come from the pruned file). Members
+# re-run after that constant was extended therefore carry extra values no member was drawn from.
+# Pool on the values common to every member's grid: rows are indexed by value, so the shared
+# values keep a consistent order, and a row using a dropped value fails in axis_index below.
+on_axis(axis, v) = any(a -> isapprox(a, v; rtol = 1e-9), axis)
+timing_grid = map((first, rest...) -> filter(v -> all(a -> on_axis(a, v), rest), first),
+                  (d.timing_grid for d in data)...)
+for name in keys(timing_grid)
+    unused = unique(v for d in data for v in d.timing_grid[name] if !on_axis(timing_grid[name], v))
+    isempty(unused) && continue
+    listed = [d.index for d in data if any(v -> v in unused, d.timing_grid[name])]
+    @warn "$(name) = $(unused) is listed in the saved grid of $(length(listed)) member(s) " *
+          "(only the grid, no member runs at it); left out of the pooled grid. All members are kept." members = listed
 end
 
 tnames, fnames = keys(timing_grid), keys(fidelity_grid)
@@ -79,7 +96,8 @@ t_start = time()
 """Ladder index of `v` on `axis`, i.e. the position the value was drawn from."""
 function axis_index(axis, v)
     i = findfirst(a -> isapprox(a, v; rtol = 1e-9), axis)
-    i === nothing && error("value $(v) is not on the saved grid $(axis)")
+    i === nothing && error("value $(v) is not on the common grid $(axis); " *
+                           "rerun the members whose grid lacks it with the extended grid")
     return i
 end
 

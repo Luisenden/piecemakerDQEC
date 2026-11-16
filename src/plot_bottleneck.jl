@@ -330,9 +330,15 @@ prev_defaults = (
     guidefontsize = Plots.default(:guidefontsize),
     legendfontsize = Plots.default(:legendfontsize),
     titlefontsize = Plots.default(:titlefontsize),
+    legendtitlefontsize = Plots.default(:legendtitlefontsize),
+    plot_titlefontsize = Plots.default(:plot_titlefontsize),
+    colorbar_tickfontsize = Plots.default(:colorbar_tickfontsize),
+    colorbar_titlefontsize = Plots.default(:colorbar_titlefontsize),
+    annotationfontsize = Plots.default(:annotationfontsize),
 )
-default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs,
-        legendfontsize = fs, titlefontsize = fs)
+default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs,
+        legendtitlefontsize = fs, titlefontsize = fs, plot_titlefontsize = fs,
+        colorbar_tickfontsize = fs, colorbar_titlefontsize = fs, annotationfontsize = fs)
 
 x = 1:length(bar_values)
 

@@ -13,6 +13,7 @@ zone        = singlezone ? "singlezone" : "multizone"                 # prefix o
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
 include(joinpath(@__DIR__, "GHZfidelity_closedform.jl"))
+include(joinpath(@__DIR__, "search_grid.jl"))   # TIMING_GRID, FIDELITY_GRID
 
 const memory_model = Symbol(error_model)
 const gate_fidelity_qec = 0.9997      # QEC-layer two-qubit gate fidelity, as in Steps 1-3
@@ -21,24 +22,16 @@ const gate_fidelity_qec = 0.9997      # QEC-layer two-qubit gate fidelity, as in
 const LOGEPS_MIN, LOGEPS_MAX, LOGEPS_TOL = -6.0, -1.0, 0.05
 
 # The timing grid the members of U_{t,∞} were drawn from (Step 2). Only saved alongside the
-# results, so Step 5 can map a timing value back to its ladder index.
-const timing_grid = order_timing_grid((
-    attempt_time        = [0.1e-6, 0.5e-6, 1e-6, 10e-6],          # t_att
-    Δt_CNOTgate         = [1e-6, 10e-6, 100e-6, 250e-6],          # t_CNOT
-    Δt_readout          = [0.1e-3, 1e-3, 2e-3],                   # t_ro
+# results, so Step 5 can map a timing value back to its ladder index. This older Steane713 run
+# drew its members from a shorter t_buff ladder (without 500 µs) than the full search space.
+const timing_grid = order_timing_grid(merge(TIMING_GRID, (
     Δt_rotation_shuttle = [10e-6, 50e-6, 100e-6],                 # t_buff
-    link_success_prob   = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5],         # p_link
-))
+)))
 
-# Candidate values per fidelity parameter (any order; sorted most → least demanding by
+# Candidate values per fidelity parameter (search_grid.jl; sorted most → least demanding by
 # order_fidelity_grid, so index 1 is the corner h_f^⊤ the BFS starts from and walks down from).
-# A single value fixes that parameter.
-const fidelity_grid = order_fidelity_grid((
-    F_link      = [1.0 - 2.5^(-x) for x in 3.0:10.0],           # F_link
-    F_CNOT      = [0.999, 0.9995, 0.9997, 0.9999, 0.99999],     # F_CNOT
-    F_readout   = [0.999, 0.9999, 1.0],                         # F_ro
-    T_coherence = [0.5, 1.0, 2.0, 10.0, 20.0],                  # T_coh,comm
-))
+# To fix a parameter, override its axis with a single value via merge.
+const fidelity_grid = order_fidelity_grid(FIDELITY_GRID)
 
 ## Load one member of U_{t,∞} with its timing-cutoff pairs from Step 3.
 @load joinpath(input_path, "$(zone)_U_t_member$(index)_timing_cutoff_pairs_$(code).jld2") step3_table sim_kwargs p_mem_max τ_max

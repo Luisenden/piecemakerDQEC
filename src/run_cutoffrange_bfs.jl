@@ -14,15 +14,17 @@ input_path = length(ARGS) >= 5 ? ARGS[5] : "./"
 output_path = length(ARGS) >= 6 ? ARGS[6] : "./"
 singlezone = length(ARGS) >= 7 ? parse(Bool, ARGS[7]) : false   # one fusion zone vs. as many as needed
 zone = singlezone ? "singlezone" : "multizone"                    # prefix of every input/output file
+gate_fidelity_qec = length(ARGS) >= 8 ? parse(Float64, ARGS[8]) : 1.0   # selects the pruned file (Fg tag)
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
 # Steps 3+4 reuse the gate fidelity and noise model Step 2 (run_prune.jl) pruned with.
-@load joinpath(input_path, "$(zone)_pruned_timing_configurations_$(code).jld2") members run_info error_budget T_coh_data
+@load joinpath(input_path, "$(zone)_pruned_timing_configurations_$(code)_Fg$(round(Int, 1e4 * gate_fidelity_qec)).jld2") members run_info error_budget T_coh_data
 # Files pruned before the zone switch existed were all run with parallel fusion zones.
 get(run_info, :singlezone, false) == singlezone ||
     error("run_info.singlezone = $(get(run_info, :singlezone, false)) does not match the requested singlezone = $(singlezone)")
-gate_fidelity_qec = run_info.gate_fidelity_qec
+run_info.gate_fidelity_qec == gate_fidelity_qec ||
+    error("run_info.gate_fidelity_qec = $(run_info.gate_fidelity_qec) does not match the requested gate_fidelity_qec = $(gate_fidelity_qec)")
 memory_model = Symbol(error_model)
 seed = run_info.seed
 
@@ -37,6 +39,7 @@ max_wallclock = run_info.max_wallclock
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
 include(joinpath(@__DIR__, "GHZfidelity_closedform.jl"))
+include(joinpath(@__DIR__, "search_grid.jl"))   # TIMING_GRID, FIDELITY_GRID
 
 p_mem_max, τ_max = error_budget.p_mem_max, error_budget.τ_max
 @info "Break-even memory budget" p_mem_max τ_max
@@ -46,23 +49,12 @@ const LOGEPS_MIN, LOGEPS_MAX, LOGEPS_TOL = -6.0, -1.0, 0.05
 
 # The timing grid the members of U_{t,∞} were drawn from (Step 2). Only saved alongside the
 # results, so Step 5 can map a timing value back to its ladder index.
-const timing_grid = order_timing_grid((
-    attempt_time        = [0.1e-6, 0.5e-6, 1e-6, 10e-6],          # t_att
-    Δt_CNOTgate         = [1e-6, 10e-6, 100e-6, 250e-6],          # t_CNOT
-    Δt_readout          = [0.1e-3, 1e-3, 2e-3],                   # t_ro
-    Δt_rotation_shuttle = [10e-6, 50e-6, 100e-6, 500e-6],         # t_buff
-    link_success_prob   = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5],         # p_link
-))
+const timing_grid = order_timing_grid(TIMING_GRID)
 
-# Candidate values per fidelity parameter (any order; sorted most → least demanding by
+# Candidate values per fidelity parameter (search_grid.jl; sorted most → least demanding by
 # order_fidelity_grid, so index 1 is the corner h_f^⊤ the BFS starts from and walks down from).
-# A single value fixes that parameter.
-const fidelity_grid = order_fidelity_grid((
-    F_link      = [1.0 - 2.5^(-x) for x in 3.0:10.0],           # F_link
-    F_CNOT      = [0.999, 0.9995, 0.9997, 0.9999, 0.99999],     # F_CNOT
-    F_readout   = [0.999, 0.9999, 1.0],                         # F_ro
-    T_coherence = [0.5, 1.0, 2.0, 10.0, 20.0],                  # T_coh,comm
-))
+# To fix a parameter, override its axis with a single value via merge.
+const fidelity_grid = order_fidelity_grid(FIDELITY_GRID)
 
 member = members[index]
 sim_kwargs = (seed = seed, target_rounds = target_rounds, max_wallclock = max_wallclock, singlezone = singlezone)

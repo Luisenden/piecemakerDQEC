@@ -11,4 +11,4 @@ include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
 p_mem_max = find_pmem_max(qec_parity_checks(code), gate_fidelity_qec; seed=seed)
 τ_max = t_cycle(p_mem_max; T_coh = T_COH_DATA)
 
-@save joinpath(@__DIR__, "error_budget_$(code).jld2") p_mem_max τ_max
+@save joinpath(@__DIR__, "error_budget_$(code)_Fg$(round(Int, 1e4 * gate_fidelity_qec)).jld2") p_mem_max τ_max

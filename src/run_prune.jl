@@ -11,19 +11,14 @@ code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as
 
 include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
+include(joinpath(@__DIR__, "search_grid.jl"))   # TIMING_GRID
 
-@load joinpath(@__DIR__, "error_budget_$(code).jld2") p_mem_max τ_max
+@load joinpath(@__DIR__, "error_budget_$(code)_Fg$(round(Int, 1e4 * gate_fidelity_qec)).jld2") p_mem_max τ_max
 ## Step 2: prune the timing configurations
 
-# Candidate values per timing parameter (any order; sorted by order_timing_grid).
-# A single value fixes that parameter.
-const timing_grid = order_timing_grid((
-    attempt_time        = [0.1e-6, 0.5e-6, 1e-6, 10e-6],          # t_att
-    Δt_CNOTgate         = [1e-6, 10e-6, 100e-6, 250e-6],          # t_CNOT
-    Δt_readout          = [0.1e-3, 1e-3, 2e-3],                   # t_ro
-    Δt_rotation_shuttle = [10e-6, 50e-6, 100e-6, 500e-6],         # t_buff
-    link_success_prob   = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5],         # p_link
-))
+# Candidate values per timing parameter (search_grid.jl; sorted by order_timing_grid).
+# To fix a parameter, override its axis with a single value via merge.
+const timing_grid = order_timing_grid(TIMING_GRID)
 sim_kwargs = (seed = seed, target_rounds = target_rounds, max_wallclock = max_wallclock, singlezone = singlezone)
 timing_cache = Dict{Any, Any}()
 
@@ -40,4 +35,4 @@ sim_kwargs = step2.sim_kwargs
 run_info = (; code, gate_fidelity_qec, sim_kwargs...)
 error_budget = (; p_mem_max, τ_max)
 T_coh_data = step2.T_coh_data
-@save joinpath(@__DIR__, "$(zone)_pruned_timing_configurations_$(code).jld2") members evaluations run_info error_budget T_coh_data
+@save joinpath(@__DIR__, "$(zone)_pruned_timing_configurations_$(code)_Fg$(round(Int, 1e4 * gate_fidelity_qec)).jld2") members evaluations run_info error_budget T_coh_data

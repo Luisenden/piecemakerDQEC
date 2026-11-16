@@ -86,7 +86,9 @@ const C_LEFT = "#2a78d6"
 const C_EPS  = "#eb6834"
 
 fs = 12
-default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs - 2)
+default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs,
+        legendtitlefontsize = fs, titlefontsize = fs, plot_titlefontsize = fs,
+        colorbar_tickfontsize = fs, colorbar_titlefontsize = fs, annotationfontsize = fs)
 
 # Explicit, so the shared p axis keeps a margin around its points. Both y axes also leave a band
 # free at the top for the legends, so they never cover a point, wherever the curves run.
@@ -126,8 +128,8 @@ fig = plot(sel.p_kept, y_left;
     framestyle = :box, gridalpha = 0.15, size = (760, 480),
     left_margin = 4mm, right_margin = 6mm, bottom_margin = 3mm,
     # GR's math text has no line break, so h_t goes in the figure title and h_f in the axis title.
-    plot_title = latex_line(tnames), plot_titlefontsize = fs - 4, plot_titlevspan = 0.04,
-    title = latex_line(fnames), titlefontsize = fs - 4,
+    plot_title = latex_line(tnames), plot_titlefontsize = fs, plot_titlevspan = 0.04,
+    title = latex_line(fnames), titlefontsize = fs,
     xlims,
     xlabel = L"\mathrm{cutoff\ policy}\ p_k = 1/k \mathrm{(surviving\ fraction\ of\ GHZ\ states\ under\ no\ cutoff)}",
     ylabel = left_label,

@@ -16,7 +16,7 @@
 # to correlate and is dropped.
 #
 # Usage:
-#   julia --project=src src/plot_substitution.jl <code> [input_path] [output_path] [--within=AXIS] [--full] [--singlezone]
+#   julia --project=src src/plot_substitution.jl <code> [input_path] [output_path] [--within=AXIS] [--full] [--singlezone | --combined]
 #
 #   --within=AXIS   ρ inside each value of AXIS (levels with fewer than 4 points are skipped),
 #                   pooled by Fisher-z with weights n - 3. Use it when one axis splits the frontier
@@ -24,6 +24,10 @@
 #                   writes <zone>_minimal_requirements_<code>_substitution_within_<AXIS>.pdf.
 #   --full          draw the whole matrix instead of the lower triangle.
 #   --singlezone    read/write the single-fusion-zone files (<zone> = singlezone); default multizone.
+#   --combined      pool the singlezone and multizone tables and correlate over their global front
+#                   (<zone> = combined): a point is kept if no point feasible in either layout is at
+#                   least as relaxed on every axis and more relaxed on one. The layout is treated as
+#                   a design choice like the cutoff. Both tables must be on the same grids.
 #   writes <zone>_minimal_requirements_<code>_substitution.pdf.
 
 using JLD2
@@ -46,21 +50,58 @@ within_flag = let i = findfirst(startswith("--within="), flags)
     i === nothing ? "" : String(split(flags[i], "="; limit = 2)[2])
 end
 lower_only = !("--full" in flags)
-known(f) = startswith(f, "--within=") || f in ("--full", "--singlezone")
+known(f) = startswith(f, "--within=") || f in ("--full", "--singlezone", "--combined")
 all(known, flags) ||
-    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --within=AXIS, --full, --singlezone")
-const zone = "--singlezone" in flags ? "singlezone" : "multizone"
+    error("unknown flag(s): $(join(filter(!known, flags), ", ")); only --within=AXIS, --full, --singlezone, --combined")
+"--singlezone" in flags && "--combined" in flags && error("--singlezone and --combined exclude each other")
+const zone = "--combined" in flags ? "combined" : "--singlezone" in flags ? "singlezone" : "multizone"
 
 code == "" && error("Missing code name (e.g. Steane713, BB12_2_3 or GB26_2_5) as first argument")
 
-@load joinpath(input_path, "$(zone)_minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid
-nrow(step5_table) == 0 && error("the Step-5 table is empty: nothing to correlate")
+"""The Step-5 table and grids of one layout, as run_minimal.jl saved them."""
+function load_step5(z)
+    @load joinpath(input_path, "$(z)_minimal_requirements_$(code).jld2") step5_table timing_grid fidelity_grid
+    return (; step5_table, timing_grid, fidelity_grid)
+end
+
+"""`q` is less demanding than `p` on every axis and differs somewhere (index 1 = most demanding)."""
+dominates(q, p) = all(q .>= p) && q != p
+
+"""The componentwise-maximal (least demanding) points, as in run_minimal.jl."""
+function pareto_maxima(points)
+    front = eltype(points)[]
+    for p in sort(unique(points); by = p -> (-sum(p), p))
+        any(q -> dominates(q, p), front) || push!(front, p)
+    end
+    return front
+end
+
+if zone == "combined"
+    single, multi = load_step5("singlezone"), load_step5("multizone")
+    (single.timing_grid, single.fidelity_grid) == (multi.timing_grid, multi.fidelity_grid) ||
+        error("singlezone and multizone were run on different grids: their indices are not comparable")
+    (; timing_grid, fidelity_grid) = multi
+else
+    (; step5_table, timing_grid, fidelity_grid) = load_step5(zone)
+end
 
 const anames = (keys(timing_grid)..., keys(fidelity_grid)...)
 const idx = Dict(name => Symbol("idx_", name) for name in anames)
+const idx_cols = [idx[n] for n in anames]
 
-# One row per hardware point: the cutoff is a protocol knob and would only repeat points.
-points = unique(step5_table, collect(values(idx)))
+if zone == "combined"
+    # Each table is the front of its own layout; the global front is the front of their union.
+    pooled = vcat(single.step5_table, multi.step5_table; cols = :union)
+    joint = collect(zip((pooled[!, c] for c in idx_cols)...))
+    on_front = Set(pareto_maxima(joint))
+    step5_table = pooled[in.(joint, Ref(on_front)), :]
+    n_single, n_multi = (nrow(unique(t.step5_table, idx_cols)) for t in (single, multi))
+    println("Combined front: $(length(on_front)) points from singlezone $(n_single) + multizone $(n_multi)")
+end
+nrow(step5_table) == 0 && error("the Step-5 table is empty: nothing to correlate")
+
+# One row per hardware point: the cutoff (and, combined, the layout) would only repeat points.
+points = unique(step5_table, idx_cols)
 
 within = within_flag == "" ? nothing : Symbol(within_flag)
 within === nothing || within in anames ||
@@ -116,7 +157,9 @@ n = length(kept)
 ## Draw
 
 fs = 12
-default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs - 2)
+default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs,
+        legendtitlefontsize = fs, titlefontsize = fs, plot_titlefontsize = fs,
+        colorbar_tickfontsize = fs, colorbar_titlefontsize = fs, annotationfontsize = fs)
 
 # Diverging, blue for substitutes and red for complements, with a neutral at ρ = 0. The value is
 # printed on every cell, so the reading never rests on colour alone.
@@ -126,8 +169,8 @@ const NEUTRAL = "#f0efec"
 # Each cell is its own filled square rather than a heatmap image, which PDF viewers smooth over.
 # Row 1 is at the top, so it reads like a matrix.
 cell(i, j; d = 0.47) = Shape([j - d, j + d, j + d, j - d], [n + 1 - i - d, n + 1 - i - d, n + 1 - i + d, n + 1 - i + d])
-cell_text(i, j) = isnan(ρ[i, j]) ? text("n/a", fs - 3, "Computer Modern", :gray55) :
-                  text(i == j ? "1" : @sprintf("%.2f", ρ[i, j]), fs - 3, "Computer Modern",
+cell_text(i, j) = isnan(ρ[i, j]) ? text("n/a", fs, "Computer Modern", :gray55) :
+                  text(i == j ? "1" : @sprintf("%.2f", ρ[i, j]), fs, "Computer Modern",
                        i != j && abs(ρ[i, j]) > 0.62 ? :white : :black)
 
 labels = axis_label.(kept)

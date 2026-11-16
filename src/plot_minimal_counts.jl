@@ -97,13 +97,15 @@ x_cats, y_cats = x_cats[keep_x], y_cats[keep_y]
 ## Draw
 
 fs = 12
-default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs + 2)
+default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs,
+        legendtitlefontsize = fs, titlefontsize = fs, plot_titlefontsize = fs,
+        colorbar_tickfontsize = fs, colorbar_titlefontsize = fs, annotationfontsize = fs)
 
 # One hue from white (no rows) to the series blue of plot_minimal.jl. The count is printed on
 # every cell, so the colour only has to carry the ordering and no colour bar is needed.
 const SHADE = cgrad(["#ffffff", "#2a78d6"])
 cmax = max(maximum(counts), 1)
-cell_text(n) = text(string(n), fs - 1, "Computer Modern",
+cell_text(n) = text(string(n), fs, "Computer Modern",
                     n == 0 ? :gray70 : n > cmax / 2 ? :white : :black)
 
 # Each cell is its own filled square rather than a heatmap image, which PDF viewers smooth over.

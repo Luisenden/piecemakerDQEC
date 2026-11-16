@@ -99,7 +99,9 @@ c_x(c) = isfinite(c) ? 1e3c : c_inf
 ## Draw
 
 fs = 12
-default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs - 2)
+default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs,
+        legendtitlefontsize = fs, titlefontsize = fs, plot_titlefontsize = fs,
+        colorbar_tickfontsize = fs, colorbar_titlefontsize = fs, annotationfontsize = fs)
 
 # Explicit, since the panels start empty and the ∞ break line would otherwise pull them out to 0.
 function padded(v)
@@ -113,7 +115,6 @@ common = (framestyle = :box, gridalpha = 0.15, left_margin = 4mm, right_margin =
 
 p_eps = plot(; common...,
     ylabel = L"\hat{\varepsilon}",
-    yguidefontsize = fs + 4,            # a lone accented glyph reads small at the body size
     ylims = padded(step5_table.eps_hat),
     xticks = (c_xticks[1], fill("", length(c_xticks[1]))),  # c is labelled once, on the bottom panel
     bottom_margin = -2mm,

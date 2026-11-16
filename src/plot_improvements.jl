@@ -515,7 +515,7 @@ function draw_polar_histogram(
             linecolor = :white,
             label = false,
         )
-        annotate!(p, x, y, text(latexstring("10^{", exponent, "}"), 10, "Computer Modern"))
+        annotate!(p, x, y, text(latexstring("10^{", exponent, "}"), Plots.default(:annotationfontsize), "Computer Modern"))
     end
 
     ## ---------------------------------------------------- 10. axis labels
@@ -528,7 +528,7 @@ function draw_polar_histogram(
         halign = cos(θ) >  0.2 ? :left :
                  cos(θ) < -0.2 ? :right : :center
 
-        annotate!(p, x, y, text(labels[j], 13, "Computer Modern", halign))
+        annotate!(p, x, y, text(labels[j], Plots.default(:annotationfontsize), "Computer Modern", halign))
     end
 
     ## ---------------------------------------------------- 11. colour bar, via a dummy series
@@ -614,9 +614,15 @@ prev_defaults = (
     guidefontsize = Plots.default(:guidefontsize),
     legendfontsize = Plots.default(:legendfontsize),
     titlefontsize = Plots.default(:titlefontsize),
+    legendtitlefontsize = Plots.default(:legendtitlefontsize),
+    plot_titlefontsize = Plots.default(:plot_titlefontsize),
+    colorbar_tickfontsize = Plots.default(:colorbar_tickfontsize),
+    colorbar_titlefontsize = Plots.default(:colorbar_titlefontsize),
+    annotationfontsize = Plots.default(:annotationfontsize),
 )
-default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs,
-        legendfontsize = fs, titlefontsize = fs)
+default(fontfamily = "Computer Modern", tickfontsize = fs, guidefontsize = fs, legendfontsize = fs,
+        legendtitlefontsize = fs, titlefontsize = fs, plot_titlefontsize = fs,
+        colorbar_tickfontsize = fs, colorbar_titlefontsize = fs, annotationfontsize = fs)
 
 panels = if split_col === nothing
     [(title = nothing, label = "all", df = step6_table)]
