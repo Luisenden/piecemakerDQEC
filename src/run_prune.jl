@@ -13,7 +13,8 @@ include(joinpath(@__DIR__, "GHZservice_v1_partitioned_sim_raw.jl"))
 include(joinpath(@__DIR__, "utils_pseudothreshold.jl"))
 include(joinpath(@__DIR__, "search_grid.jl"))   # TIMING_GRID
 
-@load joinpath(@__DIR__, "error_budget_$(code)_Fg$(round(Int, 1e4 * gate_fidelity_qec)).jld2") p_mem_max τ_max
+# the error budget depends only on the code, not on the node partitioning (BASE_CODE strips "_partitioned")
+@load joinpath(@__DIR__, "error_budget_$(BASE_CODE)_Fg$(round(Int, 1e4 * gate_fidelity_qec)).jld2") p_mem_max τ_max
 ## Step 2: prune the timing configurations
 
 # Candidate values per timing parameter (search_grid.jl; sorted by order_timing_grid).
